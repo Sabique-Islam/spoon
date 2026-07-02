@@ -61,6 +61,22 @@ async def test_oauth_callback_invalid_state():
 
 
 @pytest.mark.asyncio
+async def test_oauth_callback_does_not_require_api_key():
+    transport = ASGITransport(app=app)
+    with patch("app.core.security.get_settings") as mock_settings:
+        settings = mock_settings.return_value
+        settings.api_key = "secret-key"
+
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/auth/notion/callback",
+                params={"code": "abc", "state": "invalid"},
+            )
+    # Protected by OAuth state validation, not API key — must not be 401.
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_oauth_callback_missing_code():
     state = generate_oauth_state()
     transport = ASGITransport(app=app)
@@ -194,3 +210,28 @@ def test_token_store_recovers_from_corrupted_file(tmp_path):
         tokens = load_tokens()
 
     assert tokens == {}
+
+
+def test_production_startup_requires_api_key_and_encryption(monkeypatch):
+    from app.config import get_settings
+    from app.core import startup
+
+    monkeypatch.setenv("SPOON_ENV", "production")
+    monkeypatch.delenv("SPOON_API_KEY", raising=False)
+    monkeypatch.delenv("SPOON_TOKEN_ENCRYPTION_KEY", raising=False)
+    get_settings.cache_clear()
+
+    settings = get_settings()
+    with pytest.raises(RuntimeError, match="SPOON_API_KEY"):
+        startup.validate_startup_config(settings)
+
+    monkeypatch.setenv("SPOON_API_KEY", "prod-key")
+    get_settings.cache_clear()
+    settings = get_settings()
+    with pytest.raises(RuntimeError, match="SPOON_TOKEN_ENCRYPTION_KEY"):
+        startup.validate_startup_config(settings)
+
+    monkeypatch.setenv("SPOON_TOKEN_ENCRYPTION_KEY", "test-encryption-key")
+    get_settings.cache_clear()
+    settings = get_settings()
+    startup.validate_startup_config(settings)

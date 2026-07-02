@@ -1,6 +1,8 @@
 import io
 import zipfile
 
+import pytest
+
 from app.connectors.gdrive_content import _is_suspicious_zip, extract_text
 
 
@@ -65,3 +67,22 @@ def test_extract_docx_skips_suspicious_archive(monkeypatch):
 
     monkeypatch.setattr(gdrive_content, "_is_suspicious_zip", lambda data: True)
     assert gdrive_content._extract_docx(b"irrelevant") is None
+
+
+def test_extract_pdf_skips_huge_page_count(monkeypatch):
+    try:
+        import pypdf
+    except ImportError:
+        pytest.skip("pypdf not installed")
+
+    from app.connectors.gdrive_content import _MAX_PDF_PAGES, _extract_pdf
+
+    class _FakePage:
+        def extract_text(self):
+            return "page"
+
+    class _FakeReader:
+        pages = [_FakePage()] * (_MAX_PDF_PAGES + 1)
+
+    monkeypatch.setattr(pypdf, "PdfReader", lambda _data: _FakeReader())
+    assert _extract_pdf(b"%PDF-1.4") is None
