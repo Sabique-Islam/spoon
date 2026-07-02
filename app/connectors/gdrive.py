@@ -1,11 +1,11 @@
 import asyncio
 import logging
-from pathlib import Path
 from typing import Any
 
 import httpx
 
-from app.auth.gdrive_oauth import GOOGLE_SCOPE_LIST, has_service_account_fallback
+from app.auth.gdrive_oauth import has_service_account_fallback
+from app.auth.google_service_account import service_account_token
 from app.auth.store import get_provider_token
 from app.config import get_settings
 from app.connectors.base import SyncResult
@@ -25,7 +25,6 @@ DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_RETRIES = 3
 PAGE_SIZE = 100
-DRIVE_SCOPES = GOOGLE_SCOPE_LIST
 
 LIST_QUERY = (
     "trashed=false and "
@@ -78,34 +77,9 @@ def file_to_document(file_meta: dict[str, Any], content: str) -> Document:
 
 
 def _truncate(content: str) -> str:
-    return content[: get_settings().max_content_length]
+    from app.connectors.text import truncate
 
-
-def _service_account_token() -> str | None:
-    settings = get_settings()
-    if not settings.gdrive_api_key:
-        return None
-
-    path = Path(settings.gdrive_api_key)
-    if not path.is_file():
-        return None
-
-    try:
-        from google.auth.transport.requests import Request
-        from google.oauth2 import service_account
-    except ImportError:
-        logger.error(
-            "google-auth and requests are required for service account fallback. "
-            "Run: pip install google-auth requests"
-        )
-        return None
-
-    credentials = service_account.Credentials.from_service_account_file(
-        str(path),
-        scopes=DRIVE_SCOPES,
-    )
-    credentials.refresh(Request())
-    return credentials.token
+    return truncate(content)
 
 
 class GDriveConnector:
@@ -124,12 +98,12 @@ class GDriveConnector:
         if token:
             return token
 
-        token = _service_account_token()
+        token = service_account_token()
         if token:
             return token
 
         raise ValueError(
-            "Google Drive is not authenticated. Visit /api/v1/auth/gdrive or set SPOON_GDRIVE_API_KEY to a service account JSON path."
+            "Google Drive is not authenticated. Visit /api/v1/auth/gdrive or set SPOON_GDRIVE_SERVICE_ACCOUNT_PATH."
         )
 
     async def _request(
@@ -243,6 +217,8 @@ class GDriveConnector:
                 if response.status_code >= 400:
                     response.raise_for_status()
                 if response.content:
+                    if len(response.content) > get_settings().max_file_bytes:
+                        continue
                     return response.content, export_mime
             return None
 
@@ -250,6 +226,8 @@ class GDriveConnector:
         if response.status_code in {403, 404}:
             return None
         response.raise_for_status()
+        if len(response.content) > get_settings().max_file_bytes:
+            return None
         if not response.content:
             return None
         return response.content, mime_type
@@ -326,6 +304,8 @@ class GDriveConnector:
                 return result
 
             for file_meta in files:
+                if processed >= get_settings().max_documents_per_sync:
+                    break
                 if not file_meta.get("id"):
                     continue
                 name = file_meta.get("name", file_meta["id"])

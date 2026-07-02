@@ -1,17 +1,17 @@
 import asyncio
 import logging
-import re
-from html import unescape
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from app.auth.outlook_oauth import refresh_outlook_token_if_needed
 from app.auth.store import get_provider_token
 from app.config import get_settings
-from app.connectors.base import SyncResult
+from app.connectors.base import SyncResult, upload_document_batch
+from app.connectors.text import html_to_text, truncate
 from app.models import Document
-from app.supermemory.ingest import upload_documents
 
 logger = logging.getLogger("spoon")
 
@@ -26,19 +26,30 @@ MESSAGE_SELECT = (
 MESSAGE_FILTER = "isDraft eq false"
 
 
+def _message_filter() -> str:
+    settings = get_settings()
+    filters = [MESSAGE_FILTER]
+    if settings.sync_since_days:
+        since = datetime.now(timezone.utc) - timedelta(days=settings.sync_since_days)
+        filters.append(f"receivedDateTime ge {since.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+    return " and ".join(filters)
+
+
+ALLOWED_GRAPH_HOSTS = frozenset({"graph.microsoft.com"})
+
+
 def _truncate(content: str) -> str:
-    return content[: get_settings().max_content_length]
+    return truncate(content)
 
 
 def _html_to_text(html: str) -> str:
-    without_scripts = re.sub(
-        r"<(script|style)[^>]*>.*?</\1>",
-        "",
-        html,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    text = re.sub(r"<[^>]+>", " ", without_scripts)
-    return unescape(re.sub(r"\s+", " ", text)).strip()
+    return html_to_text(html)
+
+
+def _validate_graph_url(url: str) -> None:
+    host = urlparse(url).hostname
+    if host not in ALLOWED_GRAPH_HOSTS:
+        raise ValueError(f"Untrusted pagination URL host: {host}")
 
 
 def _format_address(address: dict[str, Any] | None) -> str:
@@ -166,11 +177,13 @@ class OutlookConnector:
         params: dict[str, Any] | None = {
             "$top": PAGE_SIZE,
             "$select": MESSAGE_SELECT,
-            "$filter": MESSAGE_FILTER,
+            "$filter": _message_filter(),
             "$orderby": "receivedDateTime desc",
         }
 
         while url:
+            if url != f"{GRAPH_API_BASE}/me/messages":
+                _validate_graph_url(url)
             response = await self._request(
                 client,
                 "GET",
@@ -196,10 +209,8 @@ class OutlookConnector:
         try:
             token = await self._resolve_token()
         except ValueError as exc:
-            result.errors.append(str(exc))
+            result.add_error(str(exc))
             return result
-
-        documents: list[Document] = []
 
         async with httpx.AsyncClient() as client:
             try:
@@ -212,39 +223,32 @@ class OutlookConnector:
                             messages = await self._fetch_messages(client, refreshed)
                             token = refreshed
                         except httpx.HTTPError as retry_exc:
-                            result.errors.append(
+                            result.add_error(
                                 f"Failed to fetch Outlook messages: {retry_exc}"
                             )
                             return result
                     else:
-                        result.errors.append(
+                        result.add_error(
                             "Outlook token expired. Re-authenticate at /api/v1/auth/outlook."
                         )
                         return result
                 else:
-                    result.errors.append(f"Failed to fetch Outlook messages: {exc}")
+                    result.add_error(f"Failed to fetch Outlook messages: {exc}")
                     return result
             except httpx.HTTPError as exc:
-                result.errors.append(f"Failed to fetch Outlook messages: {exc}")
+                result.add_error(f"Failed to fetch Outlook messages: {exc}")
                 return result
 
             for message in messages:
+                if not result.can_add_documents():
+                    break
                 message_id = message.get("id", "unknown")
                 try:
                     doc = message_to_document(message)
                     if doc:
-                        documents.append(doc)
+                        upload_document_batch([doc], result)
                 except Exception as exc:
                     logger.exception("Failed to process Outlook message %s", message_id)
-                    result.errors.append(
-                        f"Failed to process message {message_id}: {exc}"
-                    )
-
-            try:
-                upload_documents(documents)
-                result.documents_processed = len(documents)
-            except Exception as exc:
-                logger.exception("Supermemory upload failed")
-                result.errors.append(f"Failed to upload documents: {exc}")
+                    result.add_error(f"Failed to process message {message_id}: {exc}")
 
         return result

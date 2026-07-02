@@ -8,7 +8,7 @@ import httpx
 from app.auth.slack_oauth import get_slack_access_token
 from app.auth.store import get_provider_token
 from app.config import get_settings
-from app.connectors.base import SyncResult
+from app.connectors.base import SyncResult, upload_document_batch
 from app.models import Document
 from app.supermemory.ingest import upload_documents
 
@@ -500,6 +500,9 @@ class SlackConnector:
             channel=channel_id,
         )
         messages.reverse()
+        max_messages = get_settings().max_slack_messages_per_channel
+        if len(messages) > max_messages:
+            messages = messages[-max_messages:]
 
         threaded_parents = [
             message
@@ -698,7 +701,7 @@ class SlackConnector:
                 if doc:
                     documents.append(doc)
 
-            for channel in channels:
+            for channel in channels[: get_settings().max_slack_channels]:
                 channel_id = channel.get("id")
                 if not channel_id:
                     continue
@@ -732,10 +735,9 @@ class SlackConnector:
                     )
 
             try:
-                upload_documents(documents)
-                result.documents_processed = len(documents)
+                upload_document_batch(documents, result)
             except Exception as exc:
                 logger.exception("Supermemory upload failed")
-                result.errors.append(f"Failed to upload documents: {exc}")
+                result.add_error(f"Failed to upload documents: {exc}")
 
         return result
