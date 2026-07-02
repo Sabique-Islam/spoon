@@ -2,6 +2,8 @@
 
 Connect Knowledge Bases to Supermemory and search your documents.
 
+> for teams, self host supermemory
+
 ## Run
 
 ```bash
@@ -29,6 +31,16 @@ curl http://localhost:8000/api/v1/providers
 ```bash
 curl -X POST http://localhost:8000/api/v1/sync/notion
 ```
+
+### Sync Linear
+
+Set `SPOON_LINEAR_API_KEY` in `.env`, then:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/sync/linear
+```
+
+Syncs Linear **issues and projects** from your workspace.
 
 ### Sync all connected providers
 
