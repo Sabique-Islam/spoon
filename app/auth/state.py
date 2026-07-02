@@ -97,14 +97,3 @@ def pop_oauth_state(state: str) -> _PendingState | None:
     if time.time() - entry.created_at > STATE_TTL_SECONDS:
         return None
     return entry
-
-
-def validate_oauth_state(state: str) -> bool:
-    return pop_oauth_state(state) is not None
-
-
-def consume_pkce_verifier(state: str) -> str | None:
-    entry = pop_oauth_state(state)
-    if not entry:
-        return None
-    return entry.pkce_verifier

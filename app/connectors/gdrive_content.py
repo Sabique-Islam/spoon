@@ -1,9 +1,35 @@
 import json
 import logging
+import zipfile
 from html.parser import HTMLParser
 from io import BytesIO
 
 logger = logging.getLogger("spoon")
+
+# DOCX/XLSX/PPTX are ZIP containers full of XML. A malicious file can be a
+# "zip bomb" (tiny compressed size, huge decompressed size) that exhausts
+# memory/CPU when parsed by python-docx/openpyxl/python-pptx. Bail out before
+# handing the bytes to those parsers if the archive looks abusive.
+_MAX_ZIP_UNCOMPRESSED_BYTES = 200_000_000  # 200 MB decompressed, generous for real documents
+_MAX_ZIP_COMPRESSION_RATIO = 100  # decompressed / compressed size
+
+
+def _is_suspicious_zip(data: bytes) -> bool:
+    try:
+        with zipfile.ZipFile(BytesIO(data)) as archive:
+            total_uncompressed = 0
+            for info in archive.infolist():
+                total_uncompressed += info.file_size
+                if total_uncompressed > _MAX_ZIP_UNCOMPRESSED_BYTES:
+                    return True
+                if info.compress_size and (
+                    info.file_size / max(info.compress_size, 1) > _MAX_ZIP_COMPRESSION_RATIO
+                ):
+                    return True
+        return False
+    except zipfile.BadZipFile:
+        # Not a valid zip at all; let the real parser produce the actual error.
+        return False
 
 TEXT_MIME_PREFIXES = ("text/",)
 TEXT_MIME_TYPES = {
@@ -101,6 +127,10 @@ def _extract_pdf(data: bytes) -> str | None:
 
 
 def _extract_docx(data: bytes) -> str | None:
+    if _is_suspicious_zip(data):
+        logger.warning("Skipping DOCX extraction: suspicious archive (possible zip bomb)")
+        return None
+
     try:
         from docx import Document as DocxDocument
     except ImportError:
@@ -113,6 +143,10 @@ def _extract_docx(data: bytes) -> str | None:
 
 
 def _extract_xlsx(data: bytes) -> str | None:
+    if _is_suspicious_zip(data):
+        logger.warning("Skipping XLSX extraction: suspicious archive (possible zip bomb)")
+        return None
+
     try:
         from openpyxl import load_workbook
     except ImportError:
@@ -130,6 +164,10 @@ def _extract_xlsx(data: bytes) -> str | None:
 
 
 def _extract_pptx(data: bytes) -> str | None:
+    if _is_suspicious_zip(data):
+        logger.warning("Skipping PPTX extraction: suspicious archive (possible zip bomb)")
+        return None
+
     try:
         from pptx import Presentation
     except ImportError:

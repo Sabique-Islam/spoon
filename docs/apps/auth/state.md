@@ -2,6 +2,8 @@
 
 `state.py` manages short-lived OAuth `state` parameters used to prevent CSRF attacks during authorization redirects. It optionally stores PKCE code verifiers alongside each state token so they can be retrieved securely at callback time. State can live in process memory (default) or Redis for multi-instance deployments.
 
+> **Updated during the July 2026 security audit follow-up:** removed `validate_oauth_state()` and `consume_pkce_verifier()`. Both were unused dead code that internally called `pop_oauth_state()` — since `pop_oauth_state` **consumes** (deletes) the state on first read, calling any of these helpers a second time on the same state would always return "not found." Keeping multiple destructive, single-use wrappers around was a footgun waiting for a future caller to trigger a double-pop bug. `app/routes.py` already calls `pop_oauth_state()` directly, which remains the one and only supported way to validate + consume an OAuth state.
+
 ---
 
 ## Role in Spoon Architecture
@@ -50,7 +52,7 @@ exchange_code_for_token(code, pkce_verifier=...)
 
 | Consumer | Symbols used |
 |----------|----------------|
-| `app/auth/oauth.py` | `generate_oauth_state`, `validate_oauth_state` (re-exported) |
+| `app/auth/oauth.py` | `generate_oauth_state` (re-exported) |
 | `app/routes.py` | `pop_oauth_state` |
 | `tests/test_security.py` | `STATE_TTL_SECONDS`, `generate_oauth_state`, `pop_oauth_state` |
 
@@ -77,11 +79,11 @@ exchange_code_for_token(code, pkce_verifier=...)
 | 62 | `secrets.token_urlsafe(32)` | Cryptographically secure, URL-safe random state (~43 chars). |
 | 65–69 | Redis path | Stores hash `oauth:state:{state}` with TTL; fields: `created_at`, `pkce_verifier`. |
 | 71–74 | Memory path | Prunes expired, then stores in `_pending_states` dict. |
-| 78–99 | `pop_oauth_state()` | **Consumes** state (one-time use): deletes from store and returns entry or `None`. |
+| 78–99 | `pop_oauth_state()` | **Consumes** state (one-time use): deletes from store and returns entry or `None`. This is the **only** state-consuming function in the module now. |
 | 80–92 | Redis pop | `HGETALL` + `DELETE`; reconstructs `_PendingState`; treats empty verifier as `None`. |
 | 94–99 | Memory pop | Pops from dict; rejects if expired even if still present. |
-| 102–103 | `validate_oauth_state()` | Convenience: returns `True` if `pop_oauth_state` succeeds (also consumes state). |
-| 106–110 | `consume_pkce_verifier()` | Pops state and returns only the PKCE verifier (used if you need verifier without full entry). |
+
+`validate_oauth_state()` and `consume_pkce_verifier()` were removed — see the note at the top of this document.
 
 ---
 
@@ -93,9 +95,7 @@ exchange_code_for_token(code, pkce_verifier=...)
 | `MAX_PENDING_STATES` | Constant (`1000`) | Max in-memory pending states before oldest are evicted. |
 | `_PendingState` | Dataclass | `created_at: float`, `pkce_verifier: str \| None`. |
 | `generate_oauth_state` | Function | Creates state token; stores metadata; returns state string for URL. |
-| `pop_oauth_state` | Function | Validates and removes state; returns `_PendingState` or `None`. |
-| `validate_oauth_state` | Function | Boolean check that also consumes the state. |
-| `consume_pkce_verifier` | Function | Pops state and returns PKCE verifier only. |
+| `pop_oauth_state` | Function | Validates and removes state; returns `_PendingState` or `None`. This is the single supported entry point for consuming a state value. |
 
 ---
 
@@ -109,6 +109,7 @@ exchange_code_for_token(code, pkce_verifier=...)
 | PKCE verifier stored with state | Verifier never sent to browser; retrieved at callback | Tighter coupling between state and PKCE | Separate verifier store |
 | `MAX_PENDING_STATES` eviction | Protects against memory exhaustion | Legitimate bursts >1000 concurrent OAuth starts may fail | Redis-only for production |
 | Empty string → `None` for verifier | Redis hash fields are strings; normalizes "no PKCE" | Slight special-case logic | Omit field when no PKCE |
+| Single consuming function (`pop_oauth_state`) instead of multiple wrappers | Removes any risk of double-pop bugs from redundant helpers | Callers needing just a boolean or just the verifier must destructure the returned `_PendingState` themselves | Keep convenience wrappers but implement them as non-destructive peeks |
 
 ---
 
@@ -119,7 +120,7 @@ exchange_code_for_token(code, pkce_verifier=...)
 - **TTL (10 min)**: Limits the window for stolen state tokens to be used.
 - **PKCE verifier secrecy**: The verifier is stored server-side only (memory/Redis), not in the redirect URL. Only the challenge goes to the authorization server.
 - **Redis security**: If using Redis, protect network access and use TLS/authentication on the Redis URL in production.
-- **`validate_oauth_state` consumes state**: Do not call it before `pop_oauth_state` in the same flow — the callback route uses `pop_oauth_state` directly.
+- **Single consuming call per flow**: Only call `pop_oauth_state()` once per OAuth callback (as `app/routes.py` does). There is no longer a second wrapper function that could accidentally be called on the same state and silently fail because the entry was already consumed.
 
 ---
 

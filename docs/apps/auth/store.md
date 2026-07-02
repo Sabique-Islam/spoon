@@ -2,6 +2,11 @@
 
 `store.py` reads and writes OAuth tokens to a JSON file on disk, with optional Fernet encryption and restrictive file permissions. Each connected provider (e.g. `gdrive`, `notion`) has a keyed entry in the token store. Connectors and OAuth modules use this as the single source of truth for stored credentials.
 
+> **Updated during the July 2026 security audit follow-up:**
+> 1. Logs a one-time `WARNING` when tokens are being stored in **plaintext** (no `SPOON_TOKEN_ENCRYPTION_KEY` set), instead of failing silently.
+> 2. `load_tokens()` no longer crashes the whole app with an uncaught `JSONDecodeError` if the file is corrupted or was encrypted with a key that has since changed — it now logs `CRITICAL` and returns an empty token set (forces re-authentication instead of 500 errors on every request).
+> 3. The temp file used during atomic writes is now created with `0600` permissions from the moment it's opened (via `os.open`), removing a brief window where a freshly written file could be more permissive than intended before the final `chmod`.
+
 ---
 
 ## Role in Spoon Architecture
@@ -55,29 +60,24 @@ Disconnect flow (`DELETE /auth/{provider}`) calls `delete_provider_token`. Tests
 
 ## Line-by-Line Reference
 
-| Lines | Code / Section | Explanation |
+| Section | Code | Explanation |
 |-------|----------------|-------------|
-| 1–5 | Imports | JSON, logging, OS, pathlib, typing. |
-| 7 | `from app.config import get_settings` | Settings for path and encryption key. |
-| 9 | `logger = logging.getLogger("spoon")` | Logs encryption/decryption issues. |
-| 11 | `_fernet = None` | Lazy singleton for Fernet cipher. |
-| 14–17 | `_store_path()` | Resolves path from settings; creates parent dirs (`mkdir(parents=True)`). |
-| 20–36 | `_get_fernet()` | Returns Fernet instance if `token_encryption_key` set; else `None` (plaintext mode). |
-| 29–33 | Import guard | Logs if `cryptography` missing when encryption requested. |
-| 35 | `Fernet(settings.token_encryption_key.encode())` | Key must be valid Fernet key (44-char url-safe base64). |
-| 39–43 | `_encrypt(data)` | Encrypts string if Fernet available; otherwise returns plaintext. |
-| 46–54 | `_decrypt(data)` | Decrypts string; on failure logs warning and treats as plaintext (migration path). |
-| 50–54 | Decrypt fallback | Allows reading old plaintext files after enabling encryption, or corrupted data recovery attempt. |
-| 57–62 | `_set_permissions(path)` | Sets file `0600`, parent dir `0700` (owner read/write only). |
-| 61–62 | `except OSError: pass` | Ignores permission errors on platforms that restrict chmod. |
-| 65–72 | `load_tokens()` | Reads file; detects Fernet prefix `gAAAA`; decrypts if needed; parses JSON. |
-| 67–68 | Missing file | Returns empty dict (no providers connected). |
-| 70–71 | Fernet detection | Encrypted payloads from Fernet start with `gAAAA` when base64-encoded. |
-| 75–82 | `save_tokens(tokens)` | Atomic write: JSON → encrypt → write `.tmp` → rename replace. |
-| 79–81 | Atomic replace | Reduces risk of corrupted half-written token file on crash. |
-| 85–87 | `get_provider_token(provider)` | Loads full store, returns one provider's dict or `None`. |
-| 90–93 | `set_provider_token(provider, token_data)` | Merge-update one provider entry and save. |
-| 96–99 | `delete_provider_token(provider)` | Removes provider key and saves (disconnect). |
+| Imports | `json`, `logging`, `os`, `Path`, `Any` | Unchanged |
+| `_fernet = None` | Lazy singleton for Fernet cipher | Unchanged |
+| `_warned_plaintext = False` | **New** module-level flag | Ensures the plaintext-storage warning is logged once per process, not on every `save_tokens`/`load_tokens` call |
+| `_store_path()` | Resolves path; `mkdir(parents=True, exist_ok=True, mode=0o700)` then an explicit `os.chmod(path.parent, 0o700)` | **Hardened.** `mkdir`'s `mode` argument is subject to the process umask, so it alone doesn't guarantee `0700` — the explicit `chmod` closes that gap. |
+| `_get_fernet()` | Returns Fernet instance if `token_encryption_key` set; else logs a one-time warning and returns `None` (plaintext mode) | **New warning branch**: `if not settings.token_encryption_key: log warning once; return None` |
+| Import guard | Logs if `cryptography` missing when encryption requested | Unchanged |
+| `_encrypt(data)` | Encrypts string if Fernet available; otherwise returns plaintext | Unchanged |
+| `_decrypt(data)` | Returns decrypted string, or **`None`** on failure (previously returned the raw ciphertext bytes as a fallback) | **Changed return type**: `str \| None`. `None` now clearly signals "could not decrypt," rather than silently handing back garbage that would later blow up `json.loads`. |
+| `_set_permissions(path)` | Sets file `0600`, parent dir `0700` | Unchanged |
+| `load_tokens()` | Reads file; detects Fernet prefix `gAAAA`; decrypts if needed; parses JSON | **Rewritten error handling** (see below) |
+| Decrypt failure path | If `_decrypt` returns `None` (wrong/rotated key, corrupted ciphertext) | Logs `CRITICAL` and returns `{}` instead of propagating the old ciphertext into `json.loads` (which used to raise an **uncaught** `JSONDecodeError`) |
+| JSON parse failure path | `try: json.loads(raw) except json.JSONDecodeError` | **New.** Any corrupted (non-JSON) file — encrypted or not — now degrades to "no tokens" with a `CRITICAL` log line, instead of a 500 on every request that touches tokens |
+| `save_tokens(tokens)` | Atomic write: JSON → encrypt → write via `os.open(tmp, ..., 0o600)` → `fdopen`/write → `tmp.replace(path)` → `_set_permissions(path)` | **Hardened.** The temp file is created with `0600` from the start (via low-level `os.open`) instead of `Path.write_text` (which uses the default umask-derived mode), removing the brief window where the temp file could be more permissive before the final chmod. On any exception during write, the temp file is cleaned up (`tmp.unlink(missing_ok=True)`) and the exception re-raised. |
+| `get_provider_token(provider)` | Loads full store, returns one provider's dict or `None` | Unchanged |
+| `set_provider_token(provider, token_data)` | Merge-update one provider entry and save | Unchanged |
+| `delete_provider_token(provider)` | Removes provider key and saves (disconnect) | Unchanged |
 
 ---
 
@@ -129,19 +129,21 @@ Exact fields vary by provider; see each `*_oauth.py` module.
 | Optional Fernet encryption | Protects tokens at rest when key is configured | Key management burden; plaintext if key unset | Always require encryption |
 | Atomic tmp + replace | Avoids truncated files on crash | Two writes per save | Write-in-place with locking |
 | Full-file read/write per op | Simple implementation | O(n) with store size; race if multiple processes | File locking or DB transactions |
-| Plaintext fallback on decrypt failure | Easier migration / recovery | Could mask corruption or wrong key | Fail hard on decrypt error |
+| Fail-soft to empty store on decrypt/parse failure | App stays up; user just needs to reconnect providers instead of a hard crash | Could mask a real corruption issue if the `CRITICAL` log isn't monitored | Fail hard (500) on decrypt error |
 | Provider-keyed dict | One file for all integrations | Entire file rewritten on any token update | Separate file per provider |
+| One-time plaintext-storage warning | Operators are alerted without log spam on every request | Warning is easy to miss if logs aren't reviewed at startup | Refuse to start without encryption key in production |
 
 ---
 
 ## Security Considerations
 
-- **Set `SPOON_TOKEN_ENCRYPTION_KEY` in production** — generate with `Fernet.generate_key()`. Without it, tokens are stored in plaintext JSON.
-- **File permissions `0600`/`0700`** — limits access to the process owner; still protect the host filesystem and backups.
+- **Set `SPOON_TOKEN_ENCRYPTION_KEY` in production** — generate with `Fernet.generate_key()`. Without it, tokens are stored in plaintext JSON, and Spoon now logs a `WARNING` (once, from `_get_fernet`) plus a startup `WARNING` from `app/main.py` telling you exactly this.
+- **File permissions `0600`/`0700`** — limits access to the process owner; still protect the host filesystem and backups. The permission-setting race on first write has been closed (temp file is created with `0600` from the start).
 - **Token file path** — default `.data/tokens.json`; keep outside web-served directories.
 - **No in-memory caching** — every `get_provider_token` reads from disk (fresh data, but ensure disk is not synced from untrusted sources).
 - **Refresh tokens are long-lived secrets** — treat the token file like a password vault.
 - **Backup encryption** — if backing up `.data/`, encrypt backups separately.
+- **Corrupted/undecryptable store fails soft** — if the encryption key changes or the file is corrupted, `load_tokens()` returns `{}` and logs `CRITICAL` rather than crashing every endpoint that reads a token. Operators should alert on `CRITICAL` log lines from this module, since it means all connected providers effectively got disconnected and users need to re-authenticate.
 
 ---
 

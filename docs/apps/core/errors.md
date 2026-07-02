@@ -1,11 +1,13 @@
 # `app/core/errors.py`
 
 **Source:** [`app/core/errors.py`](../../app/core/errors.py)  
-**Lines:** 42
+**Lines:** ~30
 
 ## Purpose
 
-Sanitizes error messages before they are returned to API clients, especially sync error lists that may contain upstream provider responses with URLs, tokens, or secrets.
+Sanitizes error messages before they are returned to API clients, especially sync error lists that may contain upstream provider responses with URLs, tokens, or secrets — while still preserving genuinely helpful, non-sensitive guidance (e.g. "re-authenticate at ...").
+
+> **Fixed during the July 2026 security audit follow-up:** the previous patterns matched the bare words `token` and `secret` anywhere in a message, which silently destroyed useful errors like *"Notion token expired. Re-authenticate at /api/v1/auth/notion."* — turning them into a generic, unhelpful "internal error occurred" message. The patterns now only fire on messages that contain an actual secret-shaped value.
 
 ## Role in the stack
 
@@ -28,64 +30,75 @@ Original messages are always logged server-side when `context` is provided.
 | Name | Value | Meaning |
 | --- | --- | --- |
 | `_MAX_SYNC_ERRORS` | `50` | Max errors returned to client |
-| `_SENSITIVE_PATTERNS` | 6 regexes | Substrings that trigger full redaction |
+| `_SENSITIVE_PATTERNS` | 8 regexes | Substrings that trigger full redaction |
 
 ### Sensitive patterns
 
-| Pattern | Matches |
-| --- | --- |
-| `https?://[^\s]+` | URLs |
-| `Bearer\s+\S+` | Bearer tokens |
-| `xox[baprs]-\S+` | Slack tokens |
-| `ya29\.\S+` | Google OAuth access tokens |
-| `token[^\s]*` | Lines mentioning "token" |
-| `secret[^\s]*` | Lines mentioning "secret" |
+| Pattern | Matches | Notes |
+| --- | --- | --- |
+| `https?://[^\s]+` | Absolute URLs | Query strings can embed tokens/keys |
+| `Bearer\s+\S+` | `Authorization: Bearer <value>` headers | Actual header value, not the word "Bearer" alone |
+| `xox[baprs]-\S+` | Slack tokens (bot/user/app/refresh/legacy) | Specific Slack token prefix |
+| `ya29\.\S+` | Google OAuth access tokens | Specific Google prefix |
+| `AKIA[0-9A-Z]{16}` | AWS access key IDs | **New** — defense in depth, not currently emitted by any connector |
+| `-----BEGIN [A-Z ]*PRIVATE KEY-----` | PEM private key material | **New** — defense in depth |
+| `\b(?:token\|secret\|password\|api[_-]?key\|client[_-]?secret)\s*[:=]\s*\S+` | A **labeled assignment**, e.g. `token=abc123`, `secret: xyz` | **Rewritten.** Requires `=`/`:` followed by a value — the bare word alone (e.g. "token expired") no longer matches. |
+| `\b[A-Za-z0-9_-]{40,}\b` | Long opaque strings (hashes, JWTs, random keys) | **New** — catches secret-shaped values even without a "token=" label |
 
 ## Line-by-line reference
 
-| Lines | Code | Behavior |
+| Section | Code | Behavior |
 | --- | --- | --- |
-| 1–2 | Imports | Logging and regex |
-| 4 | `logger` | `"spoon"` logger |
-| 6 | `_MAX_SYNC_ERRORS = 50` | Cap client-facing error count |
-| 8–15 | `_SENSITIVE_PATTERNS` | Tuple of regex strings |
-| 19–28 | `sanitize_client_error()` | Public sanitizer for one message |
-| 21–22 | Context logging | If `context` set, log original at ERROR |
-| 23–25 | Pattern scan | Any match → generic internal error message |
-| 26–27 | Length cap | Messages over 200 chars truncated with `...` |
-| 28 | Return | Original message if safe and short |
-| 31–41 | `sanitize_sync_errors()` | Batch sanitizer for sync |
-| 32 | `sanitized` list | Accumulator |
-| 33–36 | Loop first 50 | Each error through `sanitize_client_error` with provider context |
-| 37–40 | Truncation notice | If more than 50 errors, append count message |
-| 41 | Return | Sanitized list |
+| Imports | Logging and regex | Unchanged |
+| `logger` | `"spoon"` logger | Unchanged |
+| `_MAX_SYNC_ERRORS = 50` | Cap client-facing error count | Unchanged |
+| `_SENSITIVE_PATTERNS` | Tuple of 8 regex strings | See table above; two patterns rewritten, three patterns added |
+| `sanitize_client_error()` | Context logging → pattern scan → length cap → return | Logic unchanged; only the pattern list changed |
+| `sanitize_sync_errors()` | Loop first 50 through `sanitize_client_error`, append truncation notice if needed | Unchanged |
+
+## Verifying the fix
+
+```python
+from app.core.errors import sanitize_client_error
+
+# Helpful messages now pass through untouched:
+sanitize_client_error("Notion token expired. Re-authenticate at /api/v1/auth/notion.")
+# -> "Notion token expired. Re-authenticate at /api/v1/auth/notion."
+
+# Actual secrets are still redacted:
+sanitize_client_error("access_token=ya29.a0AfH6SMC1234567890")
+# -> "An internal error occurred. Check server logs for details."
+```
+
+See `tests/test_security.py::test_error_sanitizer_preserves_helpful_reauth_messages` and `::test_error_sanitizer_redacts_actual_secrets` for the full regression-test matrix (Notion/Google/Outlook/Slack/Linear re-auth strings, plus Bearer/`ya29.`/`client_secret=`/URL/Slack-token leak cases).
 
 ## Tradeoffs
 
 | Choice | Benefit | Cost |
 | --- | --- | --- |
-| Regex redaction | Fast, no provider-specific parsers | False positives (`token` in innocent text) |
+| Regex redaction | Fast, no provider-specific parsers | Still a blocklist — can miss novel secret formats |
+| Labeled-assignment pattern (`token=...`) instead of bare word | Keeps helpful "re-authenticate" messages readable | Slightly more complex regex to maintain |
+| 40+ char opaque-string heuristic | Catches unlabeled secrets (raw JWTs, hashes) | Small false-positive risk on long non-secret identifiers (e.g. very long concatenated IDs) — acceptable given the safety-over-verbosity tradeoff |
 | Generic message on match | Strong leak prevention | Operators must read server logs |
 | 200-char cap | Limits response size | Long but safe messages truncated |
 | 50-error cap | Prevents huge JSON bodies | Remaining errors invisible to client |
-| Log on every sanitized error | Full detail in logs | Duplicate logs if many similar errors |
 
 ## Security notes
 
-- Always assume connector errors may contain OAuth tokens or internal URLs.
-- The `token[^\s]*` and `secret[^\s]*` patterns are broad — prefer logging for forensics.
-- Sanitization is not encryption; do not rely on it for logs (see `log_sync` in logging.py).
-- Extend patterns when new providers expose distinct secret formats.
+- Always assume connector errors may contain OAuth tokens or internal URLs — the pattern list is defense in depth, not a substitute for connectors avoiding secret interpolation into error strings in the first place.
+- Sanitization is not encryption; do not rely on it for logs (see `log_sync` in `logging.py`, which logs the *unsanitized* error for operators).
+- Extend patterns when new providers expose distinct secret formats (e.g. a new provider's token prefix).
+- This module fixes a real regression that existed before this pass: broad blocklists can accidentally redact non-sensitive, user-helpful text. When adding new patterns, always add a matching "should NOT be redacted" test case alongside a "should be redacted" one.
 
 ## Extension guide
 
-1. **New secret format:** Add regex to `_SENSITIVE_PATTERNS` (e.g. Notion integration tokens).
+1. **New secret format:** Add a regex to `_SENSITIVE_PATTERNS` (e.g. a new provider's token prefix), and add both a positive (redacted) and negative (preserved) test.
 2. **Structured errors:** Return `{ "code": "...", "message": "..." }` models instead of raw strings.
 3. **Error codes:** Map known connector exceptions to stable codes before sanitization.
-4. **Testing:** Unit test messages with embedded `ya29.` and Slack tokens assert generic response.
-5. **Reuse elsewhere:** Call `sanitize_client_error` from other routes before returning 4xx/5xx details.
+4. **Reuse elsewhere:** Call `sanitize_client_error` from other routes before returning 4xx/5xx details.
 
 ## Related documentation
 
 - [routes.md](../routes.md) — applies `sanitize_sync_errors` on sync responses
 - [logging.md](../logging.md) — logs unsanitized sync errors at ERROR level
+- `tests/test_security.py` — regression tests for both redaction and preservation behavior

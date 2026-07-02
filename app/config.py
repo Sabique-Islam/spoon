@@ -46,10 +46,19 @@ class Settings(BaseSettings):
     max_slack_channels: int = 500
     max_slack_messages_per_channel: int = 2000
     rate_limit_enabled: bool = True
+    rate_limit_backend: str = "memory"
+    trust_proxy_headers: bool = False
+    cors_allowed_origins: str | None = None
 
     @property
     def is_production(self) -> bool:
         return self.env.lower() == "production"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        if not self.cors_allowed_origins:
+            return []
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
     @property
     def notion_oauth_configured(self) -> bool:

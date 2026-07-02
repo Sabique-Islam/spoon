@@ -10,6 +10,8 @@
 
 This module is used by `gdrive.py` after file bytes are downloaded or exported from Drive.
 
+> **Updated during the July 2026 security audit follow-up:** added a zip-bomb guard (`_is_suspicious_zip`) that runs before `_extract_docx`, `_extract_xlsx`, and `_extract_pptx`. DOCX/XLSX/PPTX files are ZIP archives full of XML; a maliciously crafted file (tiny compressed size, huge decompressed size) could exhaust memory/CPU when handed to `python-docx`/`openpyxl`/`python-pptx`. The guard inspects the archive's `infolist()` — without fully decompressing it — and refuses to parse archives whose total uncompressed size exceeds 200 MB or whose per-entry compression ratio exceeds 100:1.
+
 ## Architecture Role
 
 ```
@@ -35,6 +37,7 @@ extract_text(filename, mime_type, data)
 | Import | Module | Usage |
 |--------|--------|-------|
 | `json`, `logging` | stdlib | Logging only (`json` imported but unused in current file) |
+| `zipfile` | stdlib | **New.** Inspects DOCX/XLSX/PPTX archive structure for the zip-bomb guard, without fully decompressing entries |
 | `HTMLParser` | `html.parser` | `_HTMLTextExtractor` |
 | `BytesIO` | `io` | In-memory file reads |
 | Optional | `pypdf` | PDF text extraction |
@@ -48,22 +51,24 @@ Optional libraries are imported inside extractor functions; missing deps log a w
 
 | Lines | Section | Description |
 |-------|---------|-------------|
-| 1–6 | Imports & logger | stdlib imports, `"spoon"` logger |
-| 8–16 | MIME constants | `TEXT_MIME_PREFIXES`, `TEXT_MIME_TYPES` |
-| 18–42 | `GOOGLE_EXPORT_FORMATS` | Google Apps type → export MIME list |
-| 44–49 | `SKIP_GOOGLE_MIME_TYPES` | Folders, shortcuts, forms, maps |
-| 52–62 | `_HTMLTextExtractor` | HTMLParser subclass collecting text nodes |
-| 65–66 | `is_google_app` | True if MIME starts with `application/vnd.google-apps.` |
-| 69–74 | `export_formats_for` | Preferred export formats per Google type |
-| 77–78 | `should_skip_mime_type` | Membership in skip set |
-| 81–87 | `_decode_text` | Try utf-8, utf-16, latin-1; fallback replace |
-| 90–100 | `_extract_pdf` | pypdf page text join |
-| 103–112 | `_extract_docx` | Paragraph text from Word |
-| 115–129 | `_extract_xlsx` | Row cells joined with ` \| ` |
-| 132–148 | `_extract_pptx` | Shape text per slide |
-| 151–155 | `_extract_html` | Feed bytes through HTML parser |
-| 158–205 | `extract_text` | Main dispatch by MIME/extension |
-| 208–229 | `supermemory_file_type` | Map to Supermemory file type string |
+| 1–7 | Imports & logger | stdlib imports (now including `zipfile`), `"spoon"` logger |
+| **New** | `_MAX_ZIP_UNCOMPRESSED_BYTES`, `_MAX_ZIP_COMPRESSION_RATIO` | Constants: 200 MB decompressed cap, 100:1 compression ratio cap |
+| **New** | `_is_suspicious_zip(data)` | Opens `data` as a `zipfile.ZipFile`, sums `file_size` across `infolist()`, bails out `True` if the running total exceeds the byte cap or any single entry's ratio exceeds the ratio cap. Returns `False` for non-zip data (lets the real parser raise the appropriate error) or normal archives. |
+| — | MIME constants | `TEXT_MIME_PREFIXES`, `TEXT_MIME_TYPES` |
+| — | `GOOGLE_EXPORT_FORMATS` | Google Apps type → export MIME list |
+| — | `SKIP_GOOGLE_MIME_TYPES` | Folders, shortcuts, forms, maps |
+| — | `_HTMLTextExtractor` | HTMLParser subclass collecting text nodes |
+| — | `is_google_app` | True if MIME starts with `application/vnd.google-apps.` |
+| — | `export_formats_for` | Preferred export formats per Google type |
+| — | `should_skip_mime_type` | Membership in skip set |
+| — | `_decode_text` | Try utf-8, utf-16, latin-1; fallback replace |
+| — | `_extract_pdf` | pypdf page text join (no zip-bomb guard — PDF is not a zip container) |
+| — | `_extract_docx` | **Now calls `_is_suspicious_zip(data)` first**; returns `None` and logs a warning if flagged. Otherwise unchanged: paragraph text from Word. |
+| — | `_extract_xlsx` | **Now calls `_is_suspicious_zip(data)` first**; returns `None` and logs a warning if flagged. Otherwise unchanged: row cells joined with ` \| `. |
+| — | `_extract_pptx` | **Now calls `_is_suspicious_zip(data)` first**; returns `None` and logs a warning if flagged. Otherwise unchanged: shape text per slide. |
+| — | `_extract_html` | Feed bytes through HTML parser |
+| — | `extract_text` | Main dispatch by MIME/extension |
+| — | `supermemory_file_type` | Map to Supermemory file type string |
 
 ### `extract_text` dispatch (158–205)
 
@@ -121,6 +126,7 @@ Optional libraries are imported inside extractor functions; missing deps log a w
 | Multi-format Google export | Tries plain text before PDF for Docs |
 | Extension + MIME dispatch | Handles mislabeled files |
 | Printable heuristic | Salvages unknown text-like binaries |
+| Zip-bomb guard (**new**) | Cheap pre-check via `infolist()` avoids ever calling the heavier parser on an abusive archive |
 
 ### Cons
 
@@ -131,6 +137,8 @@ Optional libraries are imported inside extractor functions; missing deps log a w
 | XLSX loses structure | Flat pipe-separated rows |
 | Duplicate HTML parsing | Different from `text.html_to_text` |
 | Unused `json` import | Minor cleanup opportunity |
+| Zip-bomb guard doesn't cover PDF | `pypdf` can also be abused via crafted PDFs (e.g. deeply nested objects); only ZIP-based formats are guarded here |
+| Guard is heuristic, not a hard proof | A file could still be crafted to stay just under the 200 MB / 100:1 thresholds while remaining expensive to parse; thresholds are a pragmatic balance, not a formal bound |
 
 ### Alternatives
 
@@ -145,11 +153,12 @@ Optional libraries are imported inside extractor functions; missing deps log a w
 
 | Topic | Detail |
 |-------|--------|
-| File size | Enforced in `gdrive.py` via `max_file_bytes` before calling extractors |
-| Malicious PDF/Office | Parsing untrusted files — keep optional deps updated |
-| Memory | Full file loaded into `BytesIO`; bounded by `max_file_bytes` |
+| File size | Enforced in `gdrive.py` via `max_file_bytes` before calling extractors (compressed size, at download time) |
+| Zip-bomb / decompression bomb | **New:** `_is_suspicious_zip` bounds DOCX/XLSX/PPTX to 200 MB decompressed and 100:1 compression ratio before parsing |
+| Malicious PDF/Office | Parsing untrusted files — keep optional deps (`pypdf`, `python-docx`, `openpyxl`, `python-pptx`) updated; `make security` runs `pip-audit` against pinned versions |
+| Memory | Full file loaded into `BytesIO`; bounded by `max_file_bytes` at download time and by the zip-bomb guard at parse time |
 | No network | Operates on bytes already downloaded |
-| Logging | Warnings only when optional libs missing |
+| Logging | Warnings when optional libs missing or an archive is rejected by the zip-bomb guard |
 
 ## Extension Guide
 

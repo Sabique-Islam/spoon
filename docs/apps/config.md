@@ -7,6 +7,8 @@
 
 Central configuration for Spoon using Pydantic Settings. Reads environment variables and optional `.env` file, validates types, exposes computed OAuth redirect URIs and feature flags, and provides a cached singleton accessor.
 
+> **Updated during the July 2026 security audit follow-up:** added `rate_limit_backend`, `trust_proxy_headers`, and `cors_allowed_origins` (+ `cors_origins_list` property) to support distributed rate limiting, safe-by-default proxy header handling, and explicit opt-in CORS.
+
 ## Role in the stack
 
 | Concern | How `config.py` handles it |
@@ -70,7 +72,10 @@ All fields map to `SPOON_<FIELD_NAME_UPPER>` (e.g. `SPOON_SUPERMEMORY_API_KEY`).
 | `sync_since_days` | `None` | No | Optional lookback window for sync |
 | `max_slack_channels` | `500` | No | Slack channel enumeration cap |
 | `max_slack_messages_per_channel` | `2000` | No | Messages per channel cap |
-| `rate_limit_enabled` | `True` | No | Toggle in-memory rate limiting |
+| `rate_limit_enabled` | `True` | No | Toggle rate limiting entirely |
+| `rate_limit_backend` | `"memory"` | No | **New.** `"memory"` (per-process) or `"redis"` (shared across workers/replicas, reuses `redis_url`) |
+| `trust_proxy_headers` | `False` | No | **New.** Only honor `X-Forwarded-For` for rate-limit client identification when `True` — enable only behind a reverse proxy that overwrites this header itself |
+| `cors_allowed_origins` | `None` | No | **New.** Comma-separated list of allowed browser origins. Empty/unset = no `CORSMiddleware` added, cross-origin browser requests stay blocked (current default behavior, now explicit) |
 
 ## Line-by-line reference
 
@@ -92,6 +97,7 @@ All fields map to `SPOON_<FIELD_NAME_UPPER>` (e.g. `SPOON_SUPERMEMORY_API_KEY`).
 | 82–86 | `slack_oauth_redirect_uri` | Default `/api/v1/auth/slack/callback` |
 | 88–92 | `outlook_oauth_configured` | Microsoft OAuth credentials |
 | 94–98 | `outlook_oauth_redirect_uri` | Default `/api/v1/auth/outlook/callback` |
+| **New** | `cors_origins_list` property | Splits `cors_allowed_origins` on commas, strips whitespace, drops empties; returns `[]` when unset |
 | 101–103 | `get_settings()` | `@lru_cache` returns singleton `Settings()` |
 
 ## Tradeoffs
@@ -109,8 +115,11 @@ All fields map to `SPOON_<FIELD_NAME_UPPER>` (e.g. `SPOON_SUPERMEMORY_API_KEY`).
 - `supermemory_api_key` is required at startup — ensures ingest/search cannot run unconfigured.
 - Store secrets only in environment or `.env`; never commit `.env`.
 - `token_encryption_key` should be a Fernet key when encrypting tokens at rest (see auth store).
-- When `api_key` is unset, all routes using `require_api_key` become publicly accessible.
+- When `api_key` is unset, all routes using `require_api_key` become publicly accessible. `app/main.py` now logs a `WARNING` (and `CRITICAL` if `env=production`) at startup in this case.
 - OAuth redirect URIs must exactly match provider console registration.
+- `trust_proxy_headers` defaults to `False` (safe) — only set to `True` behind a reverse proxy that itself sets/overwrites `X-Forwarded-For`; otherwise the rate limiter becomes trivially bypassable.
+- `rate_limit_backend="redis"` requires `redis_url` to be set and the `redis` package installed (already in `requirements.txt`); falls back to in-memory with a logged error if misconfigured.
+- `cors_allowed_origins` is opt-in; leaving it unset preserves the existing (safe) default of no CORS middleware at all.
 
 ## Extension guide
 

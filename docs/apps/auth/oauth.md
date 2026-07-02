@@ -2,6 +2,8 @@
 
 `oauth.py` provides small, reusable building blocks for OAuth token exchange and HTTP Basic authentication. It does not implement a full provider flow; instead, provider modules (`gdrive_oauth`, `notion_oauth`, etc.) call these helpers when talking to authorization servers. State generation is re-exported from `state.py` so callers can import everything OAuth-related from one place.
 
+> **Updated during the July 2026 security audit follow-up:** `validate_oauth_state` is no longer re-exported (or defined) — it was dead code that duplicated `pop_oauth_state`'s destructive "consume" behavior and risked a double-pop bug if ever wired up. Only `generate_oauth_state` is re-exported now. See [state.md](./state.md) for details.
+
 ---
 
 ## Role in Spoon Architecture
@@ -34,7 +36,7 @@ The FastAPI routes in `app/routes.py` never import `oauth.py` directly; they go 
 | `base64` | stdlib | Encode client credentials for Basic auth |
 | `typing.Any` | stdlib | Type hints for JSON payloads |
 | `httpx` | third-party | Async HTTP client for token exchange |
-| `generate_oauth_state`, `validate_oauth_state` | `app.auth.state` | CSRF state token lifecycle (re-exported) |
+| `generate_oauth_state` | `app.auth.state` | CSRF state token creation (re-exported) |
 
 ### What imports this module
 
@@ -56,9 +58,9 @@ The FastAPI routes in `app/routes.py` never import `oauth.py` directly; they go 
 | 3 | *(blank)* | Visual separator between stdlib and third-party imports. |
 | 4 | `import httpx` | Async HTTP client library; used for POST requests to token endpoints. |
 | 5 | *(blank)* | Separator before local imports. |
-| 6 | `from app.auth.state import ...` | Imports state helpers and re-exports them via `__all__` for convenience. |
+| 6 | `from app.auth.state import generate_oauth_state` | Imports the single state-creation helper and re-exports it via `__all__` for convenience. |
 | 7 | *(blank)* | Separator before public API definition. |
-| 8–14 | `__all__ = [...]` | Explicit public API: four functions from this file plus two re-exported from `state.py`. |
+| 8–13 | `__all__ = [...]` | Explicit public API: three functions from this file plus `generate_oauth_state` re-exported from `state.py`. (`validate_oauth_state` removed — see update note above.) |
 | 15 | *(blank)* | Separator before function definitions. |
 | 17–20 | `basic_auth_header()` | Builds an RFC 7617 Basic auth header: `client_id:client_secret` → Base64 → `"Basic …"`. |
 | 18 | `credentials = f"{client_id}:{client_secret}"` | Concatenates ID and secret with a colon, per OAuth spec for client authentication. |
@@ -86,7 +88,6 @@ The FastAPI routes in `app/routes.py` never import `oauth.py` directly; they go 
 | `exchange_token_form` | `(url, payload) → dict` | Exchanges authorization codes or refresh tokens via form POST (Google, Microsoft). |
 | `exchange_token_json` | `(url, payload, headers) → dict` | Same as above but sends JSON body with custom headers (Notion). |
 | `generate_oauth_state` | `(*, pkce_verifier=None) → str` | **Re-export** from `state.py`. Creates a random CSRF state token, optionally storing a PKCE verifier. |
-| `validate_oauth_state` | `(state) → bool` | **Re-export** from `state.py`. Checks whether a state token is valid (consumes it). |
 
 ---
 

@@ -3,14 +3,13 @@ from typing import Any
 
 import httpx
 
-from app.auth.state import generate_oauth_state, validate_oauth_state
+from app.auth.state import generate_oauth_state
 
 __all__ = [
     "basic_auth_header",
     "exchange_token_form",
     "exchange_token_json",
     "generate_oauth_state",
-    "validate_oauth_state",
 ]
 
 

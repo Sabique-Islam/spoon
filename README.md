@@ -26,8 +26,13 @@ Before exposing Spoon beyond localhost:
 Optional hardening:
 
 - `SPOON_OAUTH_STATE_BACKEND=redis` + `SPOON_REDIS_URL` for multi-worker OAuth
+- `SPOON_RATE_LIMIT_BACKEND=redis` + `SPOON_REDIS_URL` so rate limits are shared across multiple workers/replicas (the default `memory` backend is per-process)
+- `SPOON_TRUST_PROXY_HEADERS=true` **only** if Spoon sits behind a reverse proxy that itself sets/overwrites `X-Forwarded-For` — otherwise leave this `false` (default), since any client can spoof that header to bypass rate limiting
+- `SPOON_CORS_ALLOWED_ORIGINS=https://your-frontend.example.com` if a browser app needs to call Spoon directly (leave unset to keep cross-origin requests blocked entirely)
 - `SPOON_SYNC_SINCE_DAYS=90` to limit email sync window
 - `SPOON_MAX_DOCUMENTS_PER_SYNC`, `SPOON_MAX_FILE_BYTES` for resource caps
+
+Spoon logs a `WARNING` at startup if `SPOON_API_KEY` or `SPOON_TOKEN_ENCRYPTION_KEY` is unset (and `CRITICAL` if running with `SPOON_ENV=production` and no API key) — check your logs after deploying.
 
 Run security checks:
 
