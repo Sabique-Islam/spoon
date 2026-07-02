@@ -4,12 +4,18 @@ import time
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 
-from app.auth.oauth import (
-    build_authorization_url,
-    exchange_code_for_token,
-    store_oauth_token,
-    validate_oauth_state,
+from app.auth.gdrive_oauth import (
+    build_authorization_url as build_gdrive_authorization_url,
+    exchange_code_for_token as exchange_gdrive_code_for_token,
+    has_service_account_fallback,
+    store_oauth_token as store_gdrive_oauth_token,
 )
+from app.auth.notion_oauth import (
+    build_authorization_url as build_notion_authorization_url,
+    exchange_code_for_token as exchange_notion_code_for_token,
+    store_oauth_token as store_notion_oauth_token,
+)
+from app.auth.oauth import validate_oauth_state
 from app.config import get_settings
 from app.connectors.registry import SUPPORTED_PROVIDERS, get_connector
 from app.logging import log_search, log_sync
@@ -39,7 +45,7 @@ async def providers() -> ProvidersResponse:
 @router.get("/auth/notion")
 async def auth_notion() -> RedirectResponse:
     settings = get_settings()
-    if not settings.oauth_configured:
+    if not settings.notion_oauth_configured:
         raise HTTPException(
             status_code=400,
             detail={
@@ -47,7 +53,7 @@ async def auth_notion() -> RedirectResponse:
             },
         )
     try:
-        url = build_authorization_url()
+        url = build_notion_authorization_url()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
     return RedirectResponse(url=url, status_code=302)
@@ -63,8 +69,8 @@ async def auth_notion_callback(code: str | None = None, state: str | None = None
         raise HTTPException(status_code=400, detail={"error": "Invalid OAuth state"})
 
     try:
-        token_response = await exchange_code_for_token(code)
-        await store_oauth_token(token_response)
+        token_response = await exchange_notion_code_for_token(code)
+        await store_notion_oauth_token(token_response)
     except Exception as exc:
         logger.exception("OAuth token exchange failed")
         raise HTTPException(
@@ -72,6 +78,44 @@ async def auth_notion_callback(code: str | None = None, state: str | None = None
         ) from exc
 
     return {"status": "ok", "message": "Notion connected successfully"}
+
+
+@router.get("/auth/gdrive")
+async def auth_gdrive() -> RedirectResponse:
+    settings = get_settings()
+    if not settings.gdrive_oauth_configured:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "OAuth is not configured. Set SPOON_GDRIVE_CONNECTION_CLIENT_ID and SPOON_GDRIVE_CONNECTION_SECRET_ID."
+            },
+        )
+    try:
+        url = build_gdrive_authorization_url()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+    return RedirectResponse(url=url, status_code=302)
+
+
+@router.get("/auth/gdrive/callback")
+async def auth_gdrive_callback(code: str | None = None, state: str | None = None):
+    if not code:
+        raise HTTPException(
+            status_code=400, detail={"error": "Missing authorization code"}
+        )
+    if not state or not validate_oauth_state(state):
+        raise HTTPException(status_code=400, detail={"error": "Invalid OAuth state"})
+
+    try:
+        token_response = await exchange_gdrive_code_for_token(code)
+        await store_gdrive_oauth_token(token_response)
+    except Exception as exc:
+        logger.exception("Google Drive OAuth token exchange failed")
+        raise HTTPException(
+            status_code=400, detail={"error": "Failed to exchange authorization code"}
+        ) from exc
+
+    return {"status": "ok", "message": "Google Drive connected successfully"}
 
 
 async def _run_sync(provider: str) -> SyncResponse:
@@ -102,6 +146,11 @@ async def sync_notion() -> SyncResponse:
 @router.post("/sync/linear", response_model=SyncResponse)
 async def sync_linear() -> SyncResponse:
     return await _run_sync("linear")
+
+
+@router.post("/sync/gdrive", response_model=SyncResponse)
+async def sync_gdrive() -> SyncResponse:
+    return await _run_sync("gdrive")
 
 
 @router.post("/sync/all", response_model=list[SyncResponse])
