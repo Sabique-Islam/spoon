@@ -1,8 +1,9 @@
 import json
 import logging
 import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from app.config import get_settings
 
@@ -22,6 +23,30 @@ def _store_path() -> Path:
     except OSError:
         pass
     return path
+
+
+@contextmanager
+def _token_store_lock(path: Path) -> Iterator[None]:
+    """Exclusive lock for read-modify-write across Uvicorn workers."""
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w", encoding="utf-8") as lock_file:
+        try:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except ImportError:
+            # Windows and other platforms without fcntl: proceed without locking.
+            logger.debug("fcntl unavailable; token store lock skipped")
+        try:
+            yield
+        finally:
+            try:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except ImportError:
+                pass
 
 
 def _get_fernet():
@@ -77,8 +102,7 @@ def _set_permissions(path: Path) -> None:
         pass
 
 
-def load_tokens() -> dict[str, Any]:
-    path = _store_path()
+def _read_tokens_unlocked(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
 
@@ -86,9 +110,6 @@ def load_tokens() -> dict[str, Any]:
     if raw.startswith("gAAAA"):
         decrypted = _decrypt(raw)
         if decrypted is None:
-            # Wrong/rotated SPOON_TOKEN_ENCRYPTION_KEY or corrupted file.
-            # Treat as "no tokens" (forces re-authentication) instead of
-            # crashing every endpoint that needs to read a token.
             logger.critical(
                 "Token store at %s could not be decrypted; ignoring stored "
                 "tokens. Providers will need to be reconnected.",
@@ -108,14 +129,10 @@ def load_tokens() -> dict[str, Any]:
         return {}
 
 
-def save_tokens(tokens: dict[str, Any]) -> None:
-    path = _store_path()
+def _write_tokens_unlocked(path: Path, tokens: dict[str, Any]) -> None:
     payload = json.dumps(tokens, indent=2)
     encrypted = _encrypt(payload)
     tmp = path.with_suffix(".tmp")
-    # Create the temp file with restrictive permissions from the start so
-    # there is no window where a freshly-written file is world/group
-    # readable before the final chmod runs.
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         with os.fdopen(fd, "w") as handle:
@@ -127,18 +144,34 @@ def save_tokens(tokens: dict[str, Any]) -> None:
     _set_permissions(path)
 
 
+def load_tokens() -> dict[str, Any]:
+    path = _store_path()
+    with _token_store_lock(path):
+        return _read_tokens_unlocked(path)
+
+
+def save_tokens(tokens: dict[str, Any]) -> None:
+    path = _store_path()
+    with _token_store_lock(path):
+        _write_tokens_unlocked(path, tokens)
+
+
 def get_provider_token(provider: str) -> dict[str, Any] | None:
     tokens = load_tokens()
     return tokens.get(provider)
 
 
 def set_provider_token(provider: str, token_data: dict[str, Any]) -> None:
-    tokens = load_tokens()
-    tokens[provider] = token_data
-    save_tokens(tokens)
+    path = _store_path()
+    with _token_store_lock(path):
+        tokens = _read_tokens_unlocked(path)
+        tokens[provider] = token_data
+        _write_tokens_unlocked(path, tokens)
 
 
 def delete_provider_token(provider: str) -> None:
-    tokens = load_tokens()
-    tokens.pop(provider, None)
-    save_tokens(tokens)
+    path = _store_path()
+    with _token_store_lock(path):
+        tokens = _read_tokens_unlocked(path)
+        tokens.pop(provider, None)
+        _write_tokens_unlocked(path, tokens)
