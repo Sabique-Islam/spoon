@@ -14,12 +14,17 @@ make dev
 
 Before exposing Spoon beyond localhost:
 
-1. Set `SPOON_API_KEY` and pass it on every request (except `/health`):
+1. Set `SPOON_ENV=production` to disable `/docs`
+2. Set `SPOON_API_KEY` and pass it on every request (except `/health` and OAuth callbacks):
    ```bash
    curl -H "X-API-Key: your-key" http://localhost:8000/api/v1/providers
    ```
-2. Set `SPOON_TOKEN_ENCRYPTION_KEY` to encrypt OAuth tokens at rest
-3. Set `SPOON_ENV=production` to disable `/docs`
+3. Set `SPOON_TOKEN_ENCRYPTION_KEY` to encrypt OAuth tokens at rest
+
+**Production requires both `SPOON_API_KEY` and `SPOON_TOKEN_ENCRYPTION_KEY`** — Spoon refuses to start with `SPOON_ENV=production` if either is missing.
+
+OAuth browser callbacks (`/api/v1/auth/{provider}/callback`) do not use the API key; they are protected by OAuth `state` and PKCE instead.
+
 4. Run behind a TLS reverse proxy
 5. Restrict `.data/` directory permissions (tokens stored at `SPOON_TOKEN_STORE_PATH`)
 
