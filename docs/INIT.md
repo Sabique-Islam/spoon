@@ -1,0 +1,6 @@
+```
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip setuptools wheel
+pip install fastapi uvicorn httpx python-dotenv pydantic supermemory
+```
