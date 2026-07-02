@@ -19,7 +19,19 @@ SLACK_SCOPES = ",".join(
         "mpim:history",
         "channels:read",
         "groups:read",
+        "im:read",
+        "mpim:read",
         "users:read",
+        "users:read.email",
+        "users.profile:read",
+        "team:read",
+        "files:read",
+        "pins:read",
+        "bookmarks:read",
+        "emoji:read",
+        "usergroups:read",
+        "reactions:read",
+        "remote_files:read",
     ]
 )
 
