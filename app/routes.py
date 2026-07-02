@@ -1,33 +1,18 @@
 import logging
 import time
+from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 
-from app.auth.gdrive_oauth import (
-    build_authorization_url as build_gdrive_authorization_url,
-    exchange_code_for_token as exchange_gdrive_code_for_token,
-    store_oauth_token as store_gdrive_oauth_token,
-)
-from app.auth.notion_oauth import (
-    build_authorization_url as build_notion_authorization_url,
-    exchange_code_for_token as exchange_notion_code_for_token,
-    store_oauth_token as store_notion_oauth_token,
-)
-from app.auth.outlook_oauth import (
-    build_authorization_url as build_outlook_authorization_url,
-    exchange_code_for_token as exchange_outlook_code_for_token,
-    store_oauth_token as store_outlook_oauth_token,
-)
-from app.auth.slack_oauth import (
-    build_authorization_url as build_slack_authorization_url,
-    exchange_code_for_token as exchange_slack_code_for_token,
-    store_oauth_token as store_slack_oauth_token,
-)
-from app.auth.oauth import validate_oauth_state
+from app.auth.providers import OAUTH_PROVIDERS
+from app.auth.state import pop_oauth_state
+from app.auth.store import delete_provider_token
 from app.config import get_settings
 from app.connectors.registry import SUPPORTED_PROVIDERS, get_connector
-from app.logging import log_search, log_sync
+from app.core.errors import sanitize_sync_errors
+from app.core.security import require_api_key
+from app.logging import log_audit, log_search, log_sync
 from app.models import (
     HealthResponse,
     ProvidersResponse,
@@ -46,164 +31,88 @@ async def health() -> HealthResponse:
     return HealthResponse()
 
 
-@router.get("/providers", response_model=ProvidersResponse)
+@router.get("/providers", response_model=ProvidersResponse, dependencies=[Depends(require_api_key)])
 async def providers() -> ProvidersResponse:
     return ProvidersResponse(providers=SUPPORTED_PROVIDERS)
 
 
-@router.get("/auth/notion")
-async def auth_notion() -> RedirectResponse:
+@router.get("/auth/{provider}", dependencies=[Depends(require_api_key)])
+async def auth_provider(provider: str) -> RedirectResponse:
+    spec = OAUTH_PROVIDERS.get(provider)
+    if not spec:
+        raise HTTPException(status_code=404, detail={"error": f"Unknown provider: {provider}"})
+
     settings = get_settings()
-    if not settings.notion_oauth_configured:
+    if not spec.configured(settings):
         raise HTTPException(
             status_code=400,
-            detail={
-                "error": "OAuth is not configured. Set SPOON_NOTION_CONNECTION_CLIENT_ID and SPOON_NOTION_CONNECTION_SECRET_ID."
-            },
+            detail={"error": f"OAuth is not configured. Set {spec.env_hint}."},
         )
     try:
-        url = build_notion_authorization_url()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        url = spec.build_authorization_url()
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail={"error": "OAuth is not configured"}
+        ) from None
     return RedirectResponse(url=url, status_code=302)
 
 
-@router.get("/auth/notion/callback")
-async def auth_notion_callback(code: str | None = None, state: str | None = None):
+@router.get("/auth/{provider}/callback", dependencies=[Depends(require_api_key)])
+async def auth_provider_callback(
+    provider: str,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+):
+    spec = OAUTH_PROVIDERS.get(provider)
+    if not spec:
+        raise HTTPException(status_code=404, detail={"error": f"Unknown provider: {provider}"})
+
+    if error:
+        logger.warning("OAuth error provider=%s error=%s", provider, error)
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "OAuth authorization was denied or failed"},
+        )
+
     if not code:
         raise HTTPException(
             status_code=400, detail={"error": "Missing authorization code"}
         )
-    if not state or not validate_oauth_state(state):
+
+    state_entry = pop_oauth_state(state or "")
+    if not state_entry:
         raise HTTPException(status_code=400, detail={"error": "Invalid OAuth state"})
 
     try:
-        token_response = await exchange_notion_code_for_token(code)
-        await store_notion_oauth_token(token_response)
+        token_response = await spec.exchange_code_for_token(
+            code, pkce_verifier=state_entry.pkce_verifier
+        )
+        await spec.store_oauth_token(token_response)
     except Exception as exc:
-        logger.exception("OAuth token exchange failed")
+        logger.exception("OAuth token exchange failed provider=%s", provider)
         raise HTTPException(
             status_code=400, detail={"error": "Failed to exchange authorization code"}
         ) from exc
 
-    return {"status": "ok", "message": "Notion connected successfully"}
+    log_audit("oauth_connect", provider=provider)
+    return {"status": "ok", "message": spec.success_message}
 
 
-@router.get("/auth/gdrive")
-async def auth_gdrive() -> RedirectResponse:
-    settings = get_settings()
-    if not settings.gdrive_oauth_configured:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "OAuth is not configured. Set SPOON_GDRIVE_CONNECTION_CLIENT_ID and SPOON_GDRIVE_CONNECTION_SECRET_ID."
-            },
-        )
-    try:
-        url = build_gdrive_authorization_url()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-    return RedirectResponse(url=url, status_code=302)
-
-
-@router.get("/auth/gdrive/callback")
-async def auth_gdrive_callback(code: str | None = None, state: str | None = None):
-    if not code:
-        raise HTTPException(
-            status_code=400, detail={"error": "Missing authorization code"}
-        )
-    if not state or not validate_oauth_state(state):
-        raise HTTPException(status_code=400, detail={"error": "Invalid OAuth state"})
-
-    try:
-        token_response = await exchange_gdrive_code_for_token(code)
-        await store_gdrive_oauth_token(token_response)
-    except Exception as exc:
-        logger.exception("Google Drive OAuth token exchange failed")
-        raise HTTPException(
-            status_code=400, detail={"error": "Failed to exchange authorization code"}
-        ) from exc
-
-    return {"status": "ok", "message": "Google connected successfully (Drive + Gmail)"}
-
-
-@router.get("/auth/slack")
-async def auth_slack() -> RedirectResponse:
-    settings = get_settings()
-    if not settings.slack_oauth_configured:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "OAuth is not configured. Set SPOON_SLACK_CLIENT_ID and SPOON_SLACK_CLIENT_SECRET."
-            },
-        )
-    try:
-        url = build_slack_authorization_url()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-    return RedirectResponse(url=url, status_code=302)
-
-
-@router.get("/auth/slack/callback")
-async def auth_slack_callback(code: str | None = None, state: str | None = None):
-    if not code:
-        raise HTTPException(
-            status_code=400, detail={"error": "Missing authorization code"}
-        )
-    if not state or not validate_oauth_state(state):
-        raise HTTPException(status_code=400, detail={"error": "Invalid OAuth state"})
-
-    try:
-        token_response = await exchange_slack_code_for_token(code)
-        await store_slack_oauth_token(token_response)
-    except Exception as exc:
-        logger.exception("Slack OAuth token exchange failed")
-        raise HTTPException(
-            status_code=400, detail={"error": "Failed to exchange authorization code"}
-        ) from exc
-
-    return {"status": "ok", "message": "Slack connected successfully"}
-
-
-@router.get("/auth/outlook")
-async def auth_outlook() -> RedirectResponse:
-    settings = get_settings()
-    if not settings.outlook_oauth_configured:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "OAuth is not configured. Set SPOON_OUTLOOK_CONNECTION_CLIENT_ID and SPOON_OUTLOOK_CONNECTION_SECRET_ID."
-            },
-        )
-    try:
-        url = build_outlook_authorization_url()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-    return RedirectResponse(url=url, status_code=302)
-
-
-@router.get("/auth/outlook/callback")
-async def auth_outlook_callback(code: str | None = None, state: str | None = None):
-    if not code:
-        raise HTTPException(
-            status_code=400, detail={"error": "Missing authorization code"}
-        )
-    if not state or not validate_oauth_state(state):
-        raise HTTPException(status_code=400, detail={"error": "Invalid OAuth state"})
-
-    try:
-        token_response = await exchange_outlook_code_for_token(code)
-        await store_outlook_oauth_token(token_response)
-    except Exception as exc:
-        logger.exception("Outlook OAuth token exchange failed")
-        raise HTTPException(
-            status_code=400, detail={"error": "Failed to exchange authorization code"}
-        ) from exc
-
-    return {"status": "ok", "message": "Outlook connected successfully"}
+@router.delete("/auth/{provider}", dependencies=[Depends(require_api_key)])
+async def disconnect_provider(provider: str) -> dict[str, str]:
+    if provider not in OAUTH_PROVIDERS:
+        raise HTTPException(status_code=404, detail={"error": f"Unknown provider: {provider}"})
+    delete_provider_token(provider)
+    log_audit("oauth_disconnect", provider=provider)
+    return {"status": "ok", "message": f"{provider} disconnected"}
 
 
 async def _run_sync(provider: str) -> SyncResponse:
+    if provider not in SUPPORTED_PROVIDERS:
+        raise HTTPException(status_code=404, detail={"error": f"Unknown provider: {provider}"})
+
     connector = get_connector(provider)
     if not connector.is_authenticated():
         raise HTTPException(
@@ -215,45 +124,26 @@ async def _run_sync(provider: str) -> SyncResponse:
     result = await connector.sync()
     duration_ms = (time.perf_counter() - start) * 1000
     log_sync(provider, result.documents_processed, duration_ms, result.errors)
+    log_audit(
+        "sync",
+        provider=provider,
+        documents=result.documents_processed,
+        errors=len(result.errors),
+    )
 
     return SyncResponse(
         provider=provider,
         documents_processed=result.documents_processed,
-        errors=result.errors,
+        errors=sanitize_sync_errors(result.errors, provider=provider),
     )
 
 
-@router.post("/sync/notion", response_model=SyncResponse)
-async def sync_notion() -> SyncResponse:
-    return await _run_sync("notion")
+@router.post("/sync/{provider}", response_model=SyncResponse, dependencies=[Depends(require_api_key)])
+async def sync_provider(provider: str) -> SyncResponse:
+    return await _run_sync(provider)
 
 
-@router.post("/sync/linear", response_model=SyncResponse)
-async def sync_linear() -> SyncResponse:
-    return await _run_sync("linear")
-
-
-@router.post("/sync/gdrive", response_model=SyncResponse)
-async def sync_gdrive() -> SyncResponse:
-    return await _run_sync("gdrive")
-
-
-@router.post("/sync/gmail", response_model=SyncResponse)
-async def sync_gmail() -> SyncResponse:
-    return await _run_sync("gmail")
-
-
-@router.post("/sync/outlook", response_model=SyncResponse)
-async def sync_outlook() -> SyncResponse:
-    return await _run_sync("outlook")
-
-
-@router.post("/sync/slack", response_model=SyncResponse)
-async def sync_slack() -> SyncResponse:
-    return await _run_sync("slack")
-
-
-@router.post("/sync/all", response_model=list[SyncResponse])
+@router.post("/sync/all", response_model=list[SyncResponse], dependencies=[Depends(require_api_key)])
 async def sync_all() -> list[SyncResponse]:
     responses: list[SyncResponse] = []
     for provider in SUPPORTED_PROVIDERS:
@@ -270,7 +160,7 @@ async def sync_all() -> list[SyncResponse]:
     return responses
 
 
-@router.post("/search", response_model=SearchResponse)
+@router.post("/search", response_model=SearchResponse, dependencies=[Depends(require_api_key)])
 async def search(body: SearchRequest) -> SearchResponse:
     start = time.perf_counter()
     try:
