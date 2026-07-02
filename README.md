@@ -39,7 +39,7 @@ make security
 
 All endpoints are under `/api/v1`. When `SPOON_API_KEY` is set, include header `X-API-Key: ...` (or `Authorization: Bearer ...`).
 
-### Health
+### Health (no API key required)
 
 ```bash
 curl http://localhost:8000/api/v1/health
