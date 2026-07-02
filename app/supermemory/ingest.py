@@ -1,3 +1,5 @@
+import json
+
 from app.config import get_settings
 from app.models import Document
 from app.supermemory.client import get_supermemory_client
@@ -10,8 +12,7 @@ def _sanitize_custom_id(doc_id: str) -> str:
     return sanitized[:100]
 
 
-def _doc_to_payload(doc: Document) -> dict:
-    settings = get_settings()
+def _build_metadata(doc: Document) -> dict:
     metadata = {
         "source": doc.source,
         "title": doc.title,
@@ -22,11 +23,15 @@ def _doc_to_payload(doc: Document) -> dict:
             metadata[key] = value
         elif value is not None:
             metadata[key] = str(value)
+    return metadata
 
+
+def _doc_to_payload(doc: Document) -> dict:
+    settings = get_settings()
     return {
         "content": doc.content,
         "custom_id": _sanitize_custom_id(doc.id),
-        "metadata": metadata,
+        "metadata": _build_metadata(doc),
         "container_tag": settings.container_tag,
     }
 
@@ -35,6 +40,29 @@ def upload_document(doc: Document) -> None:
     client = get_supermemory_client()
     payload = _doc_to_payload(doc)
     client.documents.add(**payload)
+
+
+def upload_file_document(
+    doc: Document,
+    file_bytes: bytes,
+    mime_type: str,
+    filename: str,
+    *,
+    file_type: str | None = None,
+) -> None:
+    client = get_supermemory_client()
+    settings = get_settings()
+    kwargs: dict = {
+        "file": (filename, file_bytes, mime_type),
+        "container_tag": settings.container_tag,
+        "custom_id": _sanitize_custom_id(doc.id),
+        "metadata": json.dumps(_build_metadata(doc)),
+    }
+    if file_type:
+        kwargs["file_type"] = file_type
+    if mime_type.startswith("image/") or mime_type.startswith("video/"):
+        kwargs["mime_type"] = mime_type
+    client.documents.upload_file(**kwargs)
 
 
 def upload_documents(docs: list[Document]) -> None:
