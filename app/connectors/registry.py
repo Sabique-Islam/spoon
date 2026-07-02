@@ -5,6 +5,7 @@ from app.connectors.gdrive import GDriveConnector
 from app.connectors.gmail import GmailConnector
 from app.connectors.linear import LinearConnector
 from app.connectors.notion import NotionConnector
+from app.connectors.outlook import OutlookConnector
 from app.connectors.slack import SlackConnector
 
 CONNECTORS: dict[str, Type[Connector]] = {
@@ -12,6 +13,7 @@ CONNECTORS: dict[str, Type[Connector]] = {
     "linear": LinearConnector,
     "gdrive": GDriveConnector,
     "gmail": GmailConnector,
+    "outlook": OutlookConnector,
     "slack": SlackConnector,
 }
 

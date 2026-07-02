@@ -14,6 +14,11 @@ from app.auth.notion_oauth import (
     exchange_code_for_token as exchange_notion_code_for_token,
     store_oauth_token as store_notion_oauth_token,
 )
+from app.auth.outlook_oauth import (
+    build_authorization_url as build_outlook_authorization_url,
+    exchange_code_for_token as exchange_outlook_code_for_token,
+    store_oauth_token as store_outlook_oauth_token,
+)
 from app.auth.slack_oauth import (
     build_authorization_url as build_slack_authorization_url,
     exchange_code_for_token as exchange_slack_code_for_token,
@@ -160,6 +165,44 @@ async def auth_slack_callback(code: str | None = None, state: str | None = None)
     return {"status": "ok", "message": "Slack connected successfully"}
 
 
+@router.get("/auth/outlook")
+async def auth_outlook() -> RedirectResponse:
+    settings = get_settings()
+    if not settings.outlook_oauth_configured:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "OAuth is not configured. Set SPOON_OUTLOOK_CONNECTION_CLIENT_ID and SPOON_OUTLOOK_CONNECTION_SECRET_ID."
+            },
+        )
+    try:
+        url = build_outlook_authorization_url()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+    return RedirectResponse(url=url, status_code=302)
+
+
+@router.get("/auth/outlook/callback")
+async def auth_outlook_callback(code: str | None = None, state: str | None = None):
+    if not code:
+        raise HTTPException(
+            status_code=400, detail={"error": "Missing authorization code"}
+        )
+    if not state or not validate_oauth_state(state):
+        raise HTTPException(status_code=400, detail={"error": "Invalid OAuth state"})
+
+    try:
+        token_response = await exchange_outlook_code_for_token(code)
+        await store_outlook_oauth_token(token_response)
+    except Exception as exc:
+        logger.exception("Outlook OAuth token exchange failed")
+        raise HTTPException(
+            status_code=400, detail={"error": "Failed to exchange authorization code"}
+        ) from exc
+
+    return {"status": "ok", "message": "Outlook connected successfully"}
+
+
 async def _run_sync(provider: str) -> SyncResponse:
     connector = get_connector(provider)
     if not connector.is_authenticated():
@@ -198,6 +241,11 @@ async def sync_gdrive() -> SyncResponse:
 @router.post("/sync/gmail", response_model=SyncResponse)
 async def sync_gmail() -> SyncResponse:
     return await _run_sync("gmail")
+
+
+@router.post("/sync/outlook", response_model=SyncResponse)
+async def sync_outlook() -> SyncResponse:
+    return await _run_sync("outlook")
 
 
 @router.post("/sync/slack", response_model=SyncResponse)
