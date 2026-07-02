@@ -70,6 +70,22 @@ curl -X POST http://localhost:8000/api/v1/sync/gmail
 
 If Gmail sync fails with a scope error, re-run OAuth at `/api/v1/auth/gdrive` to grant `gmail.readonly`.
 
+### Sync Outlook
+
+Register an app in [Azure Portal](https://portal.azure.com) → App registrations. Add delegated **Mail.Read** permission and redirect URI `http://localhost:8000/api/v1/auth/outlook/callback`.
+
+Set `SPOON_OUTLOOK_CONNECTION_CLIENT_ID` and `SPOON_OUTLOOK_CONNECTION_SECRET_ID` in `.env`, then:
+
+```
+http://localhost:8000/api/v1/auth/outlook
+```
+
+```bash
+curl -X POST http://localhost:8000/api/v1/sync/outlook
+```
+
+Syncs non-draft mailbox messages via Microsoft Graph.
+
 ### Sync Slack
 
 OAuth:
