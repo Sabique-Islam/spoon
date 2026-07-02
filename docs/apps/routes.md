@@ -12,8 +12,8 @@ Defines the FastAPI `APIRouter` for all Spoon HTTP endpoints: health, provider l
 | Endpoint group | Auth | Function |
 | --- | --- | --- |
 | `/health` | None | Liveness |
-| `/providers`, `/auth/*`, `/sync/*`, `/search` | `require_api_key` (if configured) | Core product API |
-| OAuth callbacks | API key + OAuth state | Token exchange and storage |
+| `/providers`, `/auth/{provider}`, `/sync/*`, `/search` | `require_api_key` (if configured) | Core product API |
+| `/auth/{provider}/callback` | OAuth `state` + PKCE only (no API key) | Browser redirect from provider cannot send `X-API-Key` |
 
 Mounted at `/api/v1` from `main.py`.
 
@@ -92,7 +92,7 @@ POST /sync/{provider}
 
 | Choice | Benefit | Cost |
 | --- | --- | --- |
-| API key on OAuth callback | Protects callback URL from anonymous abuse | OAuth user agent must send API key (unusual for browser flows) |
+| API key on OAuth **start** only | Protects initiating connect/disconnect | Callback is public to browsers; protected by one-time `state` + PKCE instead |
 | `_run_sync` helper | Shared logic for single and bulk sync | Raises HTTPException from helper (not ideal layering) |
 | `sync_all` skips unauthenticated | Partial success without errors | Silent skip — caller may not know which were skipped |
 | Search errors → 502 | Distinguishes upstream failure | Client cannot tell config vs network vs API errors |

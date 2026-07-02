@@ -7,7 +7,7 @@
 
 Application entry point for the Spoon FastAPI service. Wires configuration, logging, middleware, API routes, and a global exception handler into a single ASGI app object consumed by Uvicorn (or any ASGI server).
 
-> **Updated during the July 2026 security audit follow-up:** added an optional, opt-in `CORSMiddleware` block and a `_warn_on_insecure_config()` startup check that logs clear warnings (or a `CRITICAL` in production) when the app is about to run without an API key, without token encryption, or with a per-process (non-shared) rate limiter.
+> **Updated:** production startup now **fails closed** via `validate_startup_config()` in `app/core/startup.py` — `SPOON_ENV=production` requires both `SPOON_API_KEY` and `SPOON_TOKEN_ENCRYPTION_KEY`. OAuth callbacks no longer require an API key.
 
 ## Role in the stack
 
@@ -46,18 +46,7 @@ Application entry point for the Spoon FastAPI service. Wires configuration, logg
 | `add_middleware(RequestLoggingMiddleware)` | Logs method, path, status, duration after inner handlers | Unchanged |
 | `include_router(router, prefix="/api/v1")` | Mounts all routes under `/api/v1` | Unchanged |
 | `@app.exception_handler(Exception)` | Logs full traceback; client sees `"Internal server error"` only | Unchanged |
-| `_warn_on_insecure_config()` | See below | **New.** Called once at import time, after the app and middleware are fully constructed |
-
-## `_warn_on_insecure_config()` — new startup diagnostics
-
-| Condition | Log level | Message intent |
-| --- | --- | --- |
-| `settings.api_key` unset | `WARNING` | Every endpoint except `/health` is reachable without authentication |
-| `settings.token_encryption_key` unset | `WARNING` | OAuth tokens are stored in plaintext on disk |
-| `settings.is_production` **and** `settings.api_key` unset | `CRITICAL` | Production deployment is fully open to the network — escalated severity |
-| `rate_limit_enabled` **and** `rate_limit_backend == "memory"` | `INFO` | Reminder that rate limits won't be shared across multiple workers/replicas |
-
-This function makes previously **silent** footguns visible in logs at startup, without changing default behavior (the app still starts and runs in "dev mode" if you don't set these — it just tells you loudly that it did).
+| `validate_startup_config()` | See `app/core/startup.py` | Development: logs warnings. Production: **raises `RuntimeError`** if `SPOON_API_KEY` or `SPOON_TOKEN_ENCRYPTION_KEY` is missing. |
 
 ## Middleware order
 
@@ -94,7 +83,7 @@ Rate limiting runs before logging so rejected (429) requests still get logged by
 - API key enforcement is **not** in `main.py`; it is applied per-route via `require_api_key` in `routes.py`.
 - Rate limiting is enabled by default (`SPOON_RATE_LIMIT_ENABLED=true`); set `SPOON_RATE_LIMIT_BACKEND=redis` for correctness across multiple workers/replicas.
 - CORS is disabled by default; only enable it with an explicit, minimal origin allowlist via `SPOON_CORS_ALLOWED_ORIGINS`.
-- Watch server logs at startup for `WARNING`/`CRITICAL` lines from `_warn_on_insecure_config()` — they call out the two most impactful misconfigurations (no API key, no token encryption).
+- Watch server logs at startup in **development** for missing-key warnings from `validate_startup_config()`.
 
 ## Extension guide
 
@@ -106,7 +95,7 @@ Rate limiting runs before logging so rejected (429) requests still get logged by
 | Widen/narrow CORS | Edit `SPOON_CORS_ALLOWED_ORIGINS` (env-only, no code change needed) or `allow_methods`/`allow_headers` in `main.py` for a code-level change |
 | Health at root | Either add a route in `main.py` or keep `/api/v1/health` in `routes.py` |
 | Structured JSON logging | Replace or extend `setup_logging()` in `app/logging.py` |
-| Fail hard instead of warn | Replace the `logger.warning(...)` calls in `_warn_on_insecure_config()` with `raise RuntimeError(...)` if you want misconfiguration to prevent startup entirely |
+| Fail hard in production | Already implemented in `app/core/startup.py` — set `SPOON_ENV=development` locally if you intentionally omit keys |
 
 ## Related documentation
 
