@@ -9,7 +9,12 @@ from app.config import get_settings
 
 GDRIVE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GDRIVE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GDRIVE_SCOPES = "https://www.googleapis.com/auth/drive.readonly"
+GOOGLE_SCOPE_LIST = [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/gmail.readonly",
+]
+GOOGLE_SCOPES = " ".join(GOOGLE_SCOPE_LIST)
+GDRIVE_SCOPES = GOOGLE_SCOPES
 PROVIDER = "gdrive"
 
 

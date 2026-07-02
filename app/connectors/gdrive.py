@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from app.auth.gdrive_oauth import has_service_account_fallback
+from app.auth.gdrive_oauth import GOOGLE_SCOPE_LIST, has_service_account_fallback
 from app.auth.store import get_provider_token
 from app.config import get_settings
 from app.connectors.base import SyncResult
@@ -25,7 +25,7 @@ DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_RETRIES = 3
 PAGE_SIZE = 100
-DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+DRIVE_SCOPES = GOOGLE_SCOPE_LIST
 
 LIST_QUERY = (
     "trashed=false and "
