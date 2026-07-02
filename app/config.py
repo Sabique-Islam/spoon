@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     slack_verification_token: str | None = None
     slack_bot_token: str | None = None
     slack_connection_authorization_url: str | None = None
+    outlook_connection_client_id: str | None = None
+    outlook_connection_secret_id: str | None = None
+    outlook_connection_authorization_url: str | None = None
     app_url: str = "http://localhost:8000"
     container_tag: str = "spoon"
     notion_version: str = "2022-06-28"
@@ -65,6 +68,18 @@ class Settings(BaseSettings):
         if self.slack_connection_authorization_url:
             return self.slack_connection_authorization_url
         return f"{self.app_url.rstrip('/')}/api/v1/auth/slack/callback"
+
+    @property
+    def outlook_oauth_configured(self) -> bool:
+        return bool(
+            self.outlook_connection_client_id and self.outlook_connection_secret_id
+        )
+
+    @property
+    def outlook_oauth_redirect_uri(self) -> str:
+        if self.outlook_connection_authorization_url:
+            return self.outlook_connection_authorization_url
+        return f"{self.app_url.rstrip('/')}/api/v1/auth/outlook/callback"
 
 
 @lru_cache

@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class Document(BaseModel):
     id: str
-    source: Literal["notion", "linear", "gdrive", "gmail", "slack"]
+    source: Literal["notion", "linear", "gdrive", "gmail", "outlook", "slack"]
     title: str
     content: str
     url: str
