@@ -9,12 +9,15 @@ class Settings(BaseSettings):
     )
 
     supermemory_api_key: str
+    api_key: str | None = None
+    env: str = "development"
     linear_api_key: str | None = None
     notion_api_key: str | None = None
     notion_connection_client_id: str | None = None
     notion_connection_secret_id: str | None = None
     notion_connection_authorization_url: str | None = None
     gdrive_api_key: str | None = None
+    gdrive_service_account_path: str | None = None
     gdrive_connection_client_id: str | None = None
     gdrive_connection_secret_id: str | None = None
     gdrive_connection_authorization_url: str | None = None
@@ -28,12 +31,25 @@ class Settings(BaseSettings):
     outlook_connection_client_id: str | None = None
     outlook_connection_secret_id: str | None = None
     outlook_connection_authorization_url: str | None = None
+    token_encryption_key: str | None = None
+    oauth_state_backend: str = "memory"
+    redis_url: str | None = None
     app_url: str = "http://localhost:8000"
     container_tag: str = "spoon"
     notion_version: str = "2022-06-28"
     token_store_path: str = ".data/tokens.json"
     max_block_depth: int = 10
     max_content_length: int = 100_000
+    max_documents_per_sync: int = 5000
+    max_file_bytes: int = 25_000_000
+    sync_since_days: int | None = None
+    max_slack_channels: int = 500
+    max_slack_messages_per_channel: int = 2000
+    rate_limit_enabled: bool = True
+
+    @property
+    def is_production(self) -> bool:
+        return self.env.lower() == "production"
 
     @property
     def notion_oauth_configured(self) -> bool:

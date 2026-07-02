@@ -49,3 +49,8 @@ def log_sync(provider: str, count: int, duration_ms: float, errors: list[str]) -
 
 def log_search(duration_ms: float) -> None:
     logger.info("search duration_ms=%.1f", duration_ms)
+
+
+def log_audit(action: str, **fields: object) -> None:
+    safe_fields = {k: v for k, v in fields.items() if k not in {"token", "secret", "password"}}
+    logger.info("audit action=%s %s", action, " ".join(f"{k}={v}" for k, v in safe_fields.items()))

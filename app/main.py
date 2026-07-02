@@ -3,13 +3,22 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.config import get_settings
+from app.core.security import RateLimitMiddleware
 from app.logging import RequestLoggingMiddleware, setup_logging
 from app.routes import router
 
 setup_logging()
 logger = logging.getLogger("spoon")
 
-app = FastAPI(title="Spoon", version="1.0.0")
+settings = get_settings()
+app = FastAPI(
+    title="Spoon",
+    version="1.0.0",
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.include_router(router, prefix="/api/v1")
 
