@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     notion_connection_client_id: str | None = None
     notion_connection_secret_id: str | None = None
     notion_connection_authorization_url: str | None = None
+    gdrive_api_key: str | None = None
+    gdrive_connection_client_id: str | None = None
+    gdrive_connection_secret_id: str | None = None
+    gdrive_connection_authorization_url: str | None = None
     app_url: str = "http://localhost:8000"
     container_tag: str = "spoon"
     notion_version: str = "2022-06-28"
@@ -22,16 +26,28 @@ class Settings(BaseSettings):
     max_content_length: int = 100_000
 
     @property
-    def oauth_configured(self) -> bool:
+    def notion_oauth_configured(self) -> bool:
         return bool(
             self.notion_connection_client_id and self.notion_connection_secret_id
         )
 
     @property
-    def oauth_redirect_uri(self) -> str:
+    def notion_oauth_redirect_uri(self) -> str:
         if self.notion_connection_authorization_url:
             return self.notion_connection_authorization_url
         return f"{self.app_url.rstrip('/')}/api/v1/auth/notion/callback"
+
+    @property
+    def gdrive_oauth_configured(self) -> bool:
+        return bool(
+            self.gdrive_connection_client_id and self.gdrive_connection_secret_id
+        )
+
+    @property
+    def gdrive_oauth_redirect_uri(self) -> str:
+        if self.gdrive_connection_authorization_url:
+            return self.gdrive_connection_authorization_url
+        return f"{self.app_url.rstrip('/')}/api/v1/auth/gdrive/callback"
 
 
 @lru_cache
