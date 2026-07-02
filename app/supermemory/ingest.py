@@ -1,4 +1,4 @@
-import json
+import hashlib
 
 from app.config import get_settings
 from app.models import Document
@@ -8,8 +8,10 @@ BATCH_SIZE = 20
 
 
 def _sanitize_custom_id(doc_id: str) -> str:
-    sanitized = "".join(c if c.isalnum() or c in "-_." else "-" for c in doc_id)
-    return sanitized[:100]
+    digest = hashlib.sha256(doc_id.encode()).hexdigest()[:32]
+    prefix = "".join(c if c.isalnum() or c in "-_." else "-" for c in doc_id[:20])
+    prefix = prefix.strip("-") or "doc"
+    return f"{prefix}-{digest}"[:100]
 
 
 def _build_metadata(doc: Document) -> dict:
@@ -17,6 +19,7 @@ def _build_metadata(doc: Document) -> dict:
         "source": doc.source,
         "title": doc.title,
         "url": doc.url,
+        "document_id": doc.id,
     }
     for key, value in doc.metadata.items():
         if isinstance(value, (str, int, float, bool)):
@@ -50,6 +53,12 @@ def upload_file_document(
     *,
     file_type: str | None = None,
 ) -> None:
+    max_bytes = get_settings().max_file_bytes
+    if len(file_bytes) > max_bytes:
+        raise ValueError(f"File exceeds max size of {max_bytes} bytes")
+
+    import json
+
     client = get_supermemory_client()
     settings = get_settings()
     kwargs: dict = {
