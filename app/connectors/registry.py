@@ -2,6 +2,7 @@ from typing import Type
 
 from app.connectors.base import Connector
 from app.connectors.gdrive import GDriveConnector
+from app.connectors.gmail import GmailConnector
 from app.connectors.linear import LinearConnector
 from app.connectors.notion import NotionConnector
 from app.connectors.slack import SlackConnector
@@ -10,6 +11,7 @@ CONNECTORS: dict[str, Type[Connector]] = {
     "notion": NotionConnector,
     "linear": LinearConnector,
     "gdrive": GDriveConnector,
+    "gmail": GmailConnector,
     "slack": SlackConnector,
 }
 

@@ -119,7 +119,7 @@ async def auth_gdrive_callback(code: str | None = None, state: str | None = None
             status_code=400, detail={"error": "Failed to exchange authorization code"}
         ) from exc
 
-    return {"status": "ok", "message": "Google Drive connected successfully"}
+    return {"status": "ok", "message": "Google connected successfully (Drive + Gmail)"}
 
 
 @router.get("/auth/slack")
@@ -193,6 +193,11 @@ async def sync_linear() -> SyncResponse:
 @router.post("/sync/gdrive", response_model=SyncResponse)
 async def sync_gdrive() -> SyncResponse:
     return await _run_sync("gdrive")
+
+
+@router.post("/sync/gmail", response_model=SyncResponse)
+async def sync_gmail() -> SyncResponse:
+    return await _run_sync("gmail")
 
 
 @router.post("/sync/slack", response_model=SyncResponse)
