@@ -50,7 +50,7 @@ def build_authorization_url() -> str:
     return f"{SLACK_AUTH_URL}?{urlencode(params)}"
 
 
-async def exchange_code_for_token(code: str) -> dict[str, Any]:
+async def exchange_code_for_token(code: str, **_kwargs: Any) -> dict[str, Any]:
     settings = get_settings()
     payload = {
         "client_id": settings.slack_client_id,

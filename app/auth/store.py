@@ -1,8 +1,14 @@
 import json
+import logging
+import os
 from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
+
+logger = logging.getLogger("spoon")
+
+_fernet = None
 
 
 def _store_path() -> Path:
@@ -11,16 +17,69 @@ def _store_path() -> Path:
     return path
 
 
+def _get_fernet():
+    global _fernet
+    if _fernet is not None:
+        return _fernet
+
+    settings = get_settings()
+    if not settings.token_encryption_key:
+        return None
+
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError:
+        logger.error("cryptography package required for token encryption")
+        return None
+
+    _fernet = Fernet(settings.token_encryption_key.encode())
+    return _fernet
+
+
+def _encrypt(data: str) -> str:
+    fernet = _get_fernet()
+    if not fernet:
+        return data
+    return fernet.encrypt(data.encode()).decode()
+
+
+def _decrypt(data: str) -> str:
+    fernet = _get_fernet()
+    if not fernet:
+        return data
+    try:
+        return fernet.decrypt(data.encode()).decode()
+    except Exception:
+        logger.warning("Failed to decrypt token store; treating as plaintext")
+        return data
+
+
+def _set_permissions(path: Path) -> None:
+    try:
+        os.chmod(path, 0o600)
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+
+
 def load_tokens() -> dict[str, Any]:
     path = _store_path()
     if not path.exists():
         return {}
-    return json.loads(path.read_text())
+    raw = path.read_text()
+    if raw.startswith("gAAAA"):
+        raw = _decrypt(raw)
+    return json.loads(raw)
 
 
 def save_tokens(tokens: dict[str, Any]) -> None:
     path = _store_path()
-    path.write_text(json.dumps(tokens, indent=2))
+    payload = json.dumps(tokens, indent=2)
+    encrypted = _encrypt(payload)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(encrypted)
+    tmp.replace(path)
+    _set_permissions(path)
 
 
 def get_provider_token(provider: str) -> dict[str, Any] | None:

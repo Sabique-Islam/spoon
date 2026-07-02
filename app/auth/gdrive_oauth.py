@@ -4,7 +4,9 @@ from urllib.parse import urlencode
 import httpx
 
 from app.auth.oauth import exchange_token_form, generate_oauth_state
+from app.auth.pkce import generate_pkce_pair
 from app.auth.store import get_provider_token, set_provider_token
+from app.auth.token_utils import merge_oauth_token, token_needs_refresh
 from app.config import get_settings
 
 GDRIVE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -23,6 +25,7 @@ def build_authorization_url() -> str:
     if not settings.gdrive_oauth_configured:
         raise ValueError("Google Drive OAuth is not configured")
 
+    verifier, challenge = generate_pkce_pair()
     params = {
         "client_id": settings.gdrive_connection_client_id,
         "redirect_uri": settings.gdrive_oauth_redirect_uri,
@@ -30,12 +33,16 @@ def build_authorization_url() -> str:
         "scope": GDRIVE_SCOPES,
         "access_type": "offline",
         "prompt": "consent",
-        "state": generate_oauth_state(),
+        "state": generate_oauth_state(pkce_verifier=verifier),
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
     }
     return f"{GDRIVE_AUTH_URL}?{urlencode(params)}"
 
 
-async def exchange_code_for_token(code: str) -> dict[str, Any]:
+async def exchange_code_for_token(
+    code: str, *, pkce_verifier: str | None = None
+) -> dict[str, Any]:
     settings = get_settings()
     payload = {
         "client_id": settings.gdrive_connection_client_id,
@@ -44,6 +51,8 @@ async def exchange_code_for_token(code: str) -> dict[str, Any]:
         "code": code,
         "redirect_uri": settings.gdrive_oauth_redirect_uri,
     }
+    if pkce_verifier:
+        payload["code_verifier"] = pkce_verifier
     return await exchange_token_form(GDRIVE_TOKEN_URL, payload)
 
 
@@ -61,12 +70,11 @@ async def refresh_access_token(refresh_token: str) -> dict[str, Any]:
 async def store_oauth_token(token_response: dict[str, Any]) -> None:
     set_provider_token(
         PROVIDER,
-        {
-            "access_token": token_response["access_token"],
-            "refresh_token": token_response.get("refresh_token"),
-            "expires_in": token_response.get("expires_in"),
-            "token_type": token_response.get("token_type"),
-        },
+        merge_oauth_token(
+            PROVIDER,
+            token_response,
+            extra={"token_type": token_response.get("token_type")},
+        ),
     )
 
 
@@ -78,12 +86,9 @@ async def get_gdrive_access_token() -> str | None:
 
 
 def has_service_account_fallback() -> bool:
-    settings = get_settings()
-    if not settings.gdrive_api_key:
-        return False
-    from pathlib import Path
+    from app.auth.google_service_account import has_service_account_fallback as _has
 
-    return Path(settings.gdrive_api_key).is_file()
+    return _has()
 
 
 async def refresh_gdrive_token_if_needed() -> str | None:
@@ -93,6 +98,9 @@ async def refresh_gdrive_token_if_needed() -> str | None:
         return await get_gdrive_access_token()
 
     if not settings.gdrive_oauth_configured:
+        return stored.get("access_token")
+
+    if not token_needs_refresh(stored):
         return stored.get("access_token")
 
     try:

@@ -4,7 +4,9 @@ from urllib.parse import urlencode
 import httpx
 
 from app.auth.oauth import exchange_token_form, generate_oauth_state
+from app.auth.pkce import generate_pkce_pair
 from app.auth.store import get_provider_token, set_provider_token
+from app.auth.token_utils import merge_oauth_token, token_needs_refresh
 from app.config import get_settings
 
 OUTLOOK_AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
@@ -23,18 +25,23 @@ def build_authorization_url() -> str:
     if not settings.outlook_oauth_configured:
         raise ValueError("Outlook OAuth is not configured")
 
+    verifier, challenge = generate_pkce_pair()
     params = {
         "client_id": settings.outlook_connection_client_id,
         "redirect_uri": settings.outlook_oauth_redirect_uri,
         "response_type": "code",
         "scope": OUTLOOK_SCOPES,
         "response_mode": "query",
-        "state": generate_oauth_state(),
+        "state": generate_oauth_state(pkce_verifier=verifier),
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
     }
     return f"{OUTLOOK_AUTH_URL}?{urlencode(params)}"
 
 
-async def exchange_code_for_token(code: str) -> dict[str, Any]:
+async def exchange_code_for_token(
+    code: str, *, pkce_verifier: str | None = None
+) -> dict[str, Any]:
     settings = get_settings()
     payload = {
         "client_id": settings.outlook_connection_client_id,
@@ -43,6 +50,8 @@ async def exchange_code_for_token(code: str) -> dict[str, Any]:
         "code": code,
         "redirect_uri": settings.outlook_oauth_redirect_uri,
     }
+    if pkce_verifier:
+        payload["code_verifier"] = pkce_verifier
     return await exchange_token_form(OUTLOOK_TOKEN_URL, payload)
 
 
@@ -59,17 +68,7 @@ async def refresh_access_token(refresh_token: str) -> dict[str, Any]:
 
 
 async def store_oauth_token(token_response: dict[str, Any]) -> None:
-    existing = get_provider_token(PROVIDER) or {}
-    set_provider_token(
-        PROVIDER,
-        {
-            "access_token": token_response["access_token"],
-            "refresh_token": token_response.get("refresh_token")
-            or existing.get("refresh_token"),
-            "expires_in": token_response.get("expires_in"),
-            "token_type": token_response.get("token_type"),
-        },
-    )
+    set_provider_token(PROVIDER, merge_oauth_token(PROVIDER, token_response))
 
 
 async def get_outlook_access_token() -> str | None:
@@ -86,6 +85,9 @@ async def refresh_outlook_token_if_needed() -> str | None:
         return await get_outlook_access_token()
 
     if not settings.outlook_oauth_configured:
+        return stored.get("access_token")
+
+    if not token_needs_refresh(stored):
         return stored.get("access_token")
 
     try:

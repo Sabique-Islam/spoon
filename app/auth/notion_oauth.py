@@ -9,6 +9,7 @@ from app.auth.oauth import (
     generate_oauth_state,
 )
 from app.auth.store import get_provider_token, set_provider_token
+from app.auth.token_utils import merge_oauth_token, token_needs_refresh
 from app.config import get_settings
 
 NOTION_AUTH_URL = "https://api.notion.com/v1/oauth/authorize"
@@ -31,7 +32,7 @@ def build_authorization_url() -> str:
     return f"{NOTION_AUTH_URL}?{urlencode(params)}"
 
 
-async def exchange_code_for_token(code: str) -> dict[str, Any]:
+async def exchange_code_for_token(code: str, **_kwargs: Any) -> dict[str, Any]:
     settings = get_settings()
     headers = {
         "Authorization": basic_auth_header(
@@ -67,12 +68,14 @@ async def refresh_access_token(refresh_token: str) -> dict[str, Any]:
 async def store_oauth_token(token_response: dict[str, Any]) -> None:
     set_provider_token(
         PROVIDER,
-        {
-            "access_token": token_response["access_token"],
-            "refresh_token": token_response.get("refresh_token"),
-            "workspace_id": token_response.get("workspace_id"),
-            "workspace_name": token_response.get("workspace_name"),
-        },
+        merge_oauth_token(
+            PROVIDER,
+            token_response,
+            extra={
+                "workspace_id": token_response.get("workspace_id"),
+                "workspace_name": token_response.get("workspace_name"),
+            },
+        ),
     )
 
 
@@ -93,6 +96,9 @@ async def refresh_notion_token_if_needed() -> str | None:
         return await get_notion_access_token()
 
     if not settings.notion_oauth_configured:
+        return stored.get("access_token")
+
+    if not token_needs_refresh(stored):
         return stored.get("access_token")
 
     try:
