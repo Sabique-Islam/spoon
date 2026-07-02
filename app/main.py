@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.core.security import RateLimitMiddleware
+from app.core.startup import validate_startup_config
 from app.logging import RequestLoggingMiddleware, setup_logging
 from app.routes import router
 
@@ -42,32 +43,4 @@ async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSON
     return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 
-def _warn_on_insecure_config() -> None:
-    if not settings.api_key:
-        logger.warning(
-            "SPOON_API_KEY is not set: every endpoint except /health is "
-            "reachable without authentication. Set SPOON_API_KEY before "
-            "exposing Spoon beyond localhost."
-        )
-    if not settings.token_encryption_key:
-        logger.warning(
-            "SPOON_TOKEN_ENCRYPTION_KEY is not set: OAuth tokens are stored "
-            "in plaintext on disk at %s. Set SPOON_TOKEN_ENCRYPTION_KEY to "
-            "encrypt tokens at rest.",
-            settings.token_store_path,
-        )
-    if settings.is_production and not settings.api_key:
-        logger.critical(
-            "SPOON_ENV=production with no SPOON_API_KEY set. This deployment "
-            "is fully open to the network. Set SPOON_API_KEY immediately."
-        )
-    if settings.rate_limit_enabled and settings.rate_limit_backend == "memory":
-        logger.info(
-            "Rate limiting uses an in-memory store (SPOON_RATE_LIMIT_BACKEND=memory). "
-            "If Spoon runs with multiple workers/replicas, set "
-            "SPOON_RATE_LIMIT_BACKEND=redis with SPOON_REDIS_URL for limits "
-            "to apply consistently across processes."
-        )
-
-
-_warn_on_insecure_config()
+validate_startup_config(settings)

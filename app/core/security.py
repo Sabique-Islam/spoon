@@ -21,6 +21,23 @@ RATE_LIMITS: dict[str, tuple[int, int]] = {
 
 _redis_client = None
 
+# Atomic sliding-window check-and-record (returns 1 if limited, 0 if allowed).
+_REDIS_RATE_LIMIT_SCRIPT = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local max_requests = tonumber(ARGV[3])
+local window_start = now - window
+redis.call('ZREMRANGEBYSCORE', key, 0, window_start)
+local count = redis.call('ZCARD', key)
+if count >= max_requests then
+  return 1
+end
+redis.call('ZADD', key, now, ARGV[4])
+redis.call('EXPIRE', key, window)
+return 0
+"""
+
 
 def _get_redis():
     """Lazily create a Redis client for distributed rate limiting.
@@ -80,16 +97,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def _is_rate_limited_redis(self, client, key: str, max_requests: int, window: int) -> bool:
         redis_key = f"ratelimit:{key}"
         now = time.time()
-        window_start = now - window
-        pipe = client.pipeline()
-        pipe.zremrangebyscore(redis_key, 0, window_start)
-        pipe.zcard(redis_key)
-        _, count = pipe.execute()
-        if count >= max_requests:
-            return True
-        client.zadd(redis_key, {str(now): now})
-        client.expire(redis_key, window)
-        return False
+        result = client.eval(
+            _REDIS_RATE_LIMIT_SCRIPT,
+            1,
+            redis_key,
+            str(now),
+            str(window),
+            str(max_requests),
+            f"{now}:{secrets.token_hex(4)}",
+        )
+        return bool(result)
 
     def _is_rate_limited_memory(self, key: str, max_requests: int, window: int) -> bool:
         now = time.time()
