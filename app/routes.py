@@ -57,7 +57,10 @@ async def auth_provider(provider: str) -> RedirectResponse:
     return RedirectResponse(url=url, status_code=302)
 
 
-@router.get("/auth/{provider}/callback", dependencies=[Depends(require_api_key)])
+# OAuth callbacks must not require an API key: the browser redirect from Google,
+# Slack, etc. cannot attach X-API-Key. CSRF state (+ PKCE where used) protects
+# this route instead.
+@router.get("/auth/{provider}/callback")
 async def auth_provider_callback(
     provider: str,
     code: str | None = None,
