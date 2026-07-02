@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from app.auth.oauth import get_notion_access_token, refresh_notion_token_if_needed
+from app.auth.notion_oauth import get_notion_access_token, refresh_notion_token_if_needed
 from app.config import get_settings
 from app.connectors.base import SyncResult
 from app.models import Document
