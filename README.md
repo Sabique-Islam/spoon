@@ -42,6 +42,50 @@ curl -X POST http://localhost:8000/api/v1/sync/linear
 
 Syncs Linear **issues and projects** from your workspace.
 
+### Sync Google Drive
+
+OAuth (also grants Gmail access):
+
+```
+http://localhost:8000/api/v1/auth/gdrive
+```
+
+Then:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/sync/gdrive
+```
+
+Or set `SPOON_GDRIVE_API_KEY` to a service account JSON file path to skip OAuth.
+
+Enable **Google Drive API** and **Gmail API** on your Google Cloud project.
+
+### Sync Gmail
+
+Uses the same Google OAuth token as Drive — no separate auth step.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/sync/gmail
+```
+
+If Gmail sync fails with a scope error, re-run OAuth at `/api/v1/auth/gdrive` to grant `gmail.readonly`.
+
+### Sync Slack
+
+OAuth:
+
+```
+http://localhost:8000/api/v1/auth/slack
+```
+
+Then:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/sync/slack
+```
+
+Or set `SPOON_SLACK_BOT_TOKEN` to skip OAuth. Syncs workspace metadata (team, users, user groups, files, emoji) plus one document per channel/DM with topic, members, pins, bookmarks, messages, and thread replies. Re-run OAuth after scope changes.
+
 ### Sync all connected providers
 
 ```bash

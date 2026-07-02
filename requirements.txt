@@ -4,5 +4,11 @@ httpx
 python-dotenv
 pydantic-settings
 supermemory
+google-auth
+requests
+pypdf
+python-docx
+openpyxl
+python-pptx
 pytest
 pytest-asyncio
