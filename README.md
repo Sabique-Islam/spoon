@@ -10,9 +10,34 @@ Connect Knowledge Bases to Supermemory and search your documents.
 make dev
 ```
 
+## Security
+
+Before exposing Spoon beyond localhost:
+
+1. Set `SPOON_API_KEY` and pass it on every request (except `/health`):
+   ```bash
+   curl -H "X-API-Key: your-key" http://localhost:8000/api/v1/providers
+   ```
+2. Set `SPOON_TOKEN_ENCRYPTION_KEY` to encrypt OAuth tokens at rest
+3. Set `SPOON_ENV=production` to disable `/docs`
+4. Run behind a TLS reverse proxy
+5. Restrict `.data/` directory permissions (tokens stored at `SPOON_TOKEN_STORE_PATH`)
+
+Optional hardening:
+
+- `SPOON_OAUTH_STATE_BACKEND=redis` + `SPOON_REDIS_URL` for multi-worker OAuth
+- `SPOON_SYNC_SINCE_DAYS=90` to limit email sync window
+- `SPOON_MAX_DOCUMENTS_PER_SYNC`, `SPOON_MAX_FILE_BYTES` for resource caps
+
+Run security checks:
+
+```bash
+make security
+```
+
 ## API
 
-All endpoints are under `/api/v1`.
+All endpoints are under `/api/v1`. When `SPOON_API_KEY` is set, include header `X-API-Key: ...` (or `Authorization: Bearer ...`).
 
 ### Health
 
@@ -26,87 +51,24 @@ curl http://localhost:8000/api/v1/health
 curl http://localhost:8000/api/v1/providers
 ```
 
-### Sync Notion
+### OAuth
+
+```
+GET /api/v1/auth/{provider}
+GET /api/v1/auth/{provider}/callback
+DELETE /api/v1/auth/{provider}   # disconnect
+```
+
+Providers: `notion`, `gdrive`, `slack`, `outlook`
+
+### Sync
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/sync/notion
-```
-
-### Sync Linear
-
-Set `SPOON_LINEAR_API_KEY` in `.env`, then:
-
-```bash
-curl -X POST http://localhost:8000/api/v1/sync/linear
-```
-
-Syncs Linear **issues and projects** from your workspace.
-
-### Sync Google Drive
-
-OAuth (also grants Gmail access):
-
-```
-http://localhost:8000/api/v1/auth/gdrive
-```
-
-Then:
-
-```bash
-curl -X POST http://localhost:8000/api/v1/sync/gdrive
-```
-
-Or set `SPOON_GDRIVE_API_KEY` to a service account JSON file path to skip OAuth.
-
-Enable **Google Drive API** and **Gmail API** on your Google Cloud project.
-
-### Sync Gmail
-
-Uses the same Google OAuth token as Drive — no separate auth step.
-
-```bash
-curl -X POST http://localhost:8000/api/v1/sync/gmail
-```
-
-If Gmail sync fails with a scope error, re-run OAuth at `/api/v1/auth/gdrive` to grant `gmail.readonly`.
-
-### Sync Outlook
-
-Register an app in [Azure Portal](https://portal.azure.com) → App registrations. Add delegated **Mail.Read** permission and redirect URI `http://localhost:8000/api/v1/auth/outlook/callback`.
-
-Set `SPOON_OUTLOOK_CONNECTION_CLIENT_ID` and `SPOON_OUTLOOK_CONNECTION_SECRET_ID` in `.env`, then:
-
-```
-http://localhost:8000/api/v1/auth/outlook
-```
-
-```bash
-curl -X POST http://localhost:8000/api/v1/sync/outlook
-```
-
-Syncs non-draft mailbox messages via Microsoft Graph.
-
-### Sync Slack
-
-OAuth:
-
-```
-http://localhost:8000/api/v1/auth/slack
-```
-
-Then:
-
-```bash
-curl -X POST http://localhost:8000/api/v1/sync/slack
-```
-
-Or set `SPOON_SLACK_BOT_TOKEN` to skip OAuth. Syncs workspace metadata (team, users, user groups, files, emoji) plus one document per channel/DM with topic, members, pins, bookmarks, messages, and thread replies. Re-run OAuth after scope changes.
-
-### Sync all connected providers
-
-```bash
+curl -X POST http://localhost:8000/api/v1/sync/{provider}
 curl -X POST http://localhost:8000/api/v1/sync/all
 ```
+
+Providers: `notion`, `linear`, `gdrive`, `gmail`, `outlook`, `slack`
 
 ### Search
 
@@ -116,10 +78,56 @@ curl -X POST http://localhost:8000/api/v1/search \
   -d '{"query": "meeting notes", "limit": 10}'
 ```
 
+## Provider setup
+
+### Notion
+
+```bash
+curl -X POST http://localhost:8000/api/v1/sync/notion
+```
+
+Or set `SPOON_NOTION_API_KEY` for API-key fallback.
+
+### Linear
+
+Set `SPOON_LINEAR_API_KEY`, then sync issues and projects:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/sync/linear
+```
+
+### Google Drive + Gmail
+
+OAuth at `http://localhost:8000/api/v1/auth/gdrive` (includes PKCE; grants Drive + Gmail).
+
+```bash
+curl -X POST http://localhost:8000/api/v1/sync/gdrive
+curl -X POST http://localhost:8000/api/v1/sync/gmail
+```
+
+Service account fallback: `SPOON_GDRIVE_SERVICE_ACCOUNT_PATH=/path/to/sa.json`
+
+### Outlook
+
+Azure app with **Mail.Read**, redirect URI `http://localhost:8000/api/v1/auth/outlook/callback`.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/sync/outlook
+```
+
+### Slack
+
+OAuth at `http://localhost:8000/api/v1/auth/slack`, or set `SPOON_SLACK_BOT_TOKEN`.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/sync/slack
+```
+
 ## Tests
 
 ```bash
 make test
+make security
 ```
 
 ## Docker
@@ -128,3 +136,5 @@ make test
 docker build -t spoon .
 docker run -p 8000:8000 --env-file .env spoon
 ```
+
+Container runs as non-root user with healthcheck on `/api/v1/health`.
