@@ -7,13 +7,17 @@ from fastapi.responses import RedirectResponse
 from app.auth.gdrive_oauth import (
     build_authorization_url as build_gdrive_authorization_url,
     exchange_code_for_token as exchange_gdrive_code_for_token,
-    has_service_account_fallback,
     store_oauth_token as store_gdrive_oauth_token,
 )
 from app.auth.notion_oauth import (
     build_authorization_url as build_notion_authorization_url,
     exchange_code_for_token as exchange_notion_code_for_token,
     store_oauth_token as store_notion_oauth_token,
+)
+from app.auth.slack_oauth import (
+    build_authorization_url as build_slack_authorization_url,
+    exchange_code_for_token as exchange_slack_code_for_token,
+    store_oauth_token as store_slack_oauth_token,
 )
 from app.auth.oauth import validate_oauth_state
 from app.config import get_settings
@@ -118,6 +122,44 @@ async def auth_gdrive_callback(code: str | None = None, state: str | None = None
     return {"status": "ok", "message": "Google Drive connected successfully"}
 
 
+@router.get("/auth/slack")
+async def auth_slack() -> RedirectResponse:
+    settings = get_settings()
+    if not settings.slack_oauth_configured:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "OAuth is not configured. Set SPOON_SLACK_CLIENT_ID and SPOON_SLACK_CLIENT_SECRET."
+            },
+        )
+    try:
+        url = build_slack_authorization_url()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+    return RedirectResponse(url=url, status_code=302)
+
+
+@router.get("/auth/slack/callback")
+async def auth_slack_callback(code: str | None = None, state: str | None = None):
+    if not code:
+        raise HTTPException(
+            status_code=400, detail={"error": "Missing authorization code"}
+        )
+    if not state or not validate_oauth_state(state):
+        raise HTTPException(status_code=400, detail={"error": "Invalid OAuth state"})
+
+    try:
+        token_response = await exchange_slack_code_for_token(code)
+        await store_slack_oauth_token(token_response)
+    except Exception as exc:
+        logger.exception("Slack OAuth token exchange failed")
+        raise HTTPException(
+            status_code=400, detail={"error": "Failed to exchange authorization code"}
+        ) from exc
+
+    return {"status": "ok", "message": "Slack connected successfully"}
+
+
 async def _run_sync(provider: str) -> SyncResponse:
     connector = get_connector(provider)
     if not connector.is_authenticated():
@@ -151,6 +193,11 @@ async def sync_linear() -> SyncResponse:
 @router.post("/sync/gdrive", response_model=SyncResponse)
 async def sync_gdrive() -> SyncResponse:
     return await _run_sync("gdrive")
+
+
+@router.post("/sync/slack", response_model=SyncResponse)
+async def sync_slack() -> SyncResponse:
+    return await _run_sync("slack")
 
 
 @router.post("/sync/all", response_model=list[SyncResponse])
