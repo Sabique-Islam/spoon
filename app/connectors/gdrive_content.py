@@ -12,6 +12,7 @@ logger = logging.getLogger("spoon")
 # handing the bytes to those parsers if the archive looks abusive.
 _MAX_ZIP_UNCOMPRESSED_BYTES = 200_000_000  # 200 MB decompressed, generous for real documents
 _MAX_ZIP_COMPRESSION_RATIO = 100  # decompressed / compressed size
+_MAX_PDF_PAGES = 500
 
 
 def _is_suspicious_zip(data: bytes) -> bool:
@@ -121,6 +122,14 @@ def _extract_pdf(data: bytes) -> str | None:
         return None
 
     reader = PdfReader(BytesIO(data))
+    if len(reader.pages) > _MAX_PDF_PAGES:
+        logger.warning(
+            "Skipping PDF extraction: %d pages exceeds limit of %d",
+            len(reader.pages),
+            _MAX_PDF_PAGES,
+        )
+        return None
+
     pages = [page.extract_text() or "" for page in reader.pages]
     text = "\n\n".join(page.strip() for page in pages if page.strip())
     return text or None
